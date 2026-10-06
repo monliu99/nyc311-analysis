@@ -127,3 +127,19 @@ def test_clean_reads_raw_parts_with_different_columns(tmp_path, sample_cfg, inge
     out = con.sql(f"select count(*), count(landmark) from {clean.clean_glob(cfg)}").fetchone()
     assert out[0] == 196_270
     assert out[1] > 0
+
+
+def test_days_covered_by_a_missing_batch_are_flagged(tmp_path, sample_cfg, ingested):
+    import duckdb
+
+    from nyc311 import ingest
+    manifest = ingested["manifest"]
+    manifest = manifest[manifest.file != "311_batch_0010.json"]
+    part = tmp_path / "raw.parquet"
+    duckdb.sql(f"copy (select * from read_parquet('{ingest.raw_glob(sample_cfg)}') "
+               f"where _file <> '311_batch_0010.json') to '{part.as_posix()}' (format parquet)")
+    con = duckdb.connect()
+    days = clean.incomplete_days(con, f"read_parquet('{part.as_posix()}')", manifest)
+    assert {dt.date(2010, 1, 15), dt.date(2010, 1, 16), dt.date(2010, 1, 17)} <= days
+    assert dt.date(2010, 1, 13) not in days
+    assert dt.date(2010, 1, 20) not in days

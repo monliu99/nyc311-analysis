@@ -55,8 +55,9 @@ def clean_zip(values):
 
 
 def incomplete_days(con, raw, manifest):
-    """Days whose rows are partly in files we don't have: after the last file's median date, and the
-    late days of any truncated file (each day's rows are split across about two consecutive files)."""
+    """Days whose rows are partly in files we don't have (each day's rows are split across about two
+    consecutive files): after the last file's median date, the late days of any truncated file, and the
+    days between the median dates of the files on either side of a missing batch number."""
     d = con.sql(f"""
         with r as (select _file, {CR} ts from {raw} r where r.created_date is not null),
         m as (select _file, quantile_disc(ts, 0.5) med from r group by 1)
@@ -72,6 +73,11 @@ def incomplete_days(con, raw, manifest):
         row = d[d._file == f]
         if len(row):
             days |= set(pd.date_range(row.p50.iloc[0], row.mx.iloc[0]).date)
+    d["num"] = d._file.str.extract(r"_(\d+)\.json$", expand=False).astype(float)
+    numbered = d.dropna(subset=["num"]).sort_values("num")
+    for prev, nxt in zip(numbered.itertuples(), numbered.iloc[1:].itertuples()):
+        if nxt.num - prev.num > 1:
+            days |= set(pd.date_range(prev.p50 + pd.Timedelta(days=1), nxt.p50 - pd.Timedelta(days=1)).date)
     return days
 
 

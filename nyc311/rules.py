@@ -43,5 +43,5 @@ BORO_CODE = {"MANHATTAN": 1, "BRONX": 2, "BROOKLYN": 3, "QUEENS": 4, "STATEN ISL
 CD_COUNT = {"MANHATTAN": 12, "BRONX": 12, "BROOKLYN": 18, "QUEENS": 14, "STATEN ISLAND": 3}
 
 TEST_STATUSES = ["Closed - Testing", "Draft"]
-UNRESOLVED_STATUSES = ["Open", "Pending", "Assigned", "Started"]
+UNRESOLVED_STATUSES = ["Open", "Pending", "Assigned", "Started", "Unassigned"]  # "Unassigned" seen on the cluster
 LONG_DURATION_HOURS = 365 * 24  # closed more than a year after opening
