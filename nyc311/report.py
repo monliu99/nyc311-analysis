@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pandas as pd
 
+TEXT_WIDTH = 90
+
 
 class Report:
     """A labeled, length-capped text block: printed for copy-paste and saved to <out>/reports/."""
@@ -19,9 +21,18 @@ class Report:
     def table(self, df, max_rows=25, title=None):
         if title:
             self.add("", f"## {title}")
-        with pd.option_context("display.width", 200, "display.max_columns", 50,
-                               "display.max_colwidth", 60, "display.float_format", "{:,.2f}".format):
-            self.add(df.head(max_rows).to_string(index=False))
+        if df.empty:
+            self.add("(none)")
+            return
+        shown = df.head(max_rows)
+        fmts = {}
+        for c in shown.columns:
+            if not pd.api.types.is_numeric_dtype(shown[c]):
+                w = max(int(shown[c].astype(str).str.len().clip(upper=TEXT_WIDTH).max()), len(str(c)))
+                fmts[c] = lambda v, w=w: f"{str(v)[:TEXT_WIDTH]:<{w}}"
+        with pd.option_context("display.width", 250, "display.max_columns", 50,
+                               "display.max_colwidth", TEXT_WIDTH + 5, "display.float_format", "{:,.2f}".format):
+            self.add(shown.to_string(index=False, formatters=fmts, justify="left"))
         if len(df) > max_rows:
             self.add(f"({max_rows} of {len(df)} rows shown)")
 

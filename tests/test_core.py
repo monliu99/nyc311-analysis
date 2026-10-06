@@ -54,6 +54,21 @@ def test_report_truncates_long_blocks(tmp_path):
     assert (tmp_path / "reports" / "long.txt").read_text().count("\n") == 51
 
 
+def test_report_empty_table_says_none(tmp_path):
+    rep = Report("empty", tmp_path)
+    rep.table(pd.DataFrame({"a": []}), title="Nothing")
+    text = rep.emit()
+    assert "(none)" in text
+    assert "Empty DataFrame" not in text
+
+
+def test_report_left_aligns_text_columns(tmp_path):
+    rep = Report("align", tmp_path)
+    rep.table(pd.DataFrame({"name": ["a", "a much longer value"], "n": [1, 2]}))
+    first_row = rep.emit().splitlines()[2]
+    assert first_row.startswith("a ")
+
+
 def test_report_table_says_how_many_rows_were_cut(tmp_path):
     rep = Report("tbl", tmp_path)
     rep.table(pd.DataFrame({"a": [1, 2, 3]}), max_rows=2, title="Counts")
