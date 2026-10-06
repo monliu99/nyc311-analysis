@@ -93,14 +93,14 @@ states which flagged rows it leaves out. Counts are for the 196,270 local rows.
 
 | # | Issue | Rows | Decision |
 |---|---|---|---|
-| 1 | Rows created >30 days from their file's median date (2015 DOHMH, 2013 DOB) | 43 | Flag `created_out_of_window`; left out of every time-based question |
-| 2 | Days partly in files we don't have: after the last file's median (Feb 2-3) and the late days of the cut-off batch 0010 (Jan 15-17) | see `03_clean` | Flag `possibly_incomplete_day`; left out of daily trends, shown as caveats |
+| 1 | Rows created >30 days from their file's median date | 43 local; 422,505 on the cluster | Flag `out_of_file_order`, descriptive only (not excluded). On the full data most are older records (mainly DOB, 2010-2019) backfilled into batches 1930-2088, so they are real requests |
+| 2 | Days partly in files we don't have: after the last date-ordered file's median, the late days of a cut-off file, and the days between the files around a missing batch number (cluster: batch 0010 and 18 batches in 2787-2841) | 24 days on the cluster (Jan 15-18 2010; 23 days Sept-Nov 2021) | Flag `possibly_incomplete_day`; left out of daily trends, shown as caveats. Only date-ordered files (>=50% of rows within 30 days of the median) are used |
 | 3 | `closed_date` = 1900-01-01 (DOHMH) | 367 | Set to NULL, flag `closed_placeholder` |
 | 4 | Closed before opened (2,677 DOT closed more than a day early) | 2,921 | Flag `closed_before_created`; no duration |
 | 5 | Close date present (not a placeholder) but status is not Closed | 2,983 | Flag `status_conflict`; durations only for status = Closed |
 | 5b | Closed at the exact second it was opened (DOT, DSNY, DOB mostly) | 8,600 | Flag `closed_at_creation`; Q4 reports medians with and without them |
 | 6 | Test records (`Closed - Testing`, `Draft`) | 6 | Flag `is_test`; left out everywhere |
-| 7 | Open, Pending, Assigned, Started | 6,435 | Flag `unresolved` (Q9) |
+| 7 | Any status other than Closed, Cancelled, test, or `Unspecified` (Open, Pending, Assigned, Started, In Progress, Email Sent, Unassigned, ...) | 6,435 local | Flag `unresolved` (Q9) |
 | 8 | Opening time exactly midnight (HPD records dates only) | 84,883 | Flag `date_only_created`; durations for these are precise to the day only |
 | 9 | Text that means missing: `Unspecified` (borough, park fields), `UNKNOWN` (channel), `N/A` (facility, location type, descriptor, city) | see `02c` | Set to NULL |
 | 10 | ZIP codes: ZIP+4, `N/A`, `0000`, out-of-state | 157 | Keep NYC 5-digit only (`zip`); original in `zip_raw` |
@@ -115,6 +115,6 @@ One row per raw row. Read with `from nyc311.clean import clean_glob` then `con.s
 - **Keys and times:** `unique_key`, `_file`, `created`, `closed`, `due`, `resolution_updated` (timestamps; placeholders are NULL), `duration_h` (hours from opening to closing; only for status Closed, closed after opened).
 - **What:** `agency`, `agency_name`, `complaint_type` (raw), `descriptor`, `canonical_type`, `category`, `origin` (`city`/`private`/`natural`/`other`), `is_info_request`, `type_needs_review`, `status`, `channel`, `resolution_description`.
 - **Where:** `borough` + `borough_source`, `boro_cd` (standard district, e.g. 101 = Manhattan 1) + `cd_source`, `special_area_cd` (parks/airports), `zip`, `zip_raw`, `latitude`, `longitude`, plus the raw address, location and highway/taxi/park text columns.
-- **Flags (boolean):** `dup_key`, `created_out_of_window`, `possibly_incomplete_day`, `is_test`, `unresolved`, `status_conflict`, `closed_placeholder`, `closed_before_created`, `closed_at_creation`, `closed_after_1yr`, `date_only_created`, `date_only_closed`.
+- **Flags (boolean):** `dup_key`, `out_of_file_order`, `possibly_incomplete_day`, `is_test`, `unresolved`, `status_conflict`, `closed_placeholder`, `closed_before_created`, `closed_at_creation`, `closed_after_1yr`, `date_only_created`, `date_only_closed`.
 
-Default analysis set: `not is_test and not dup_key and not created_out_of_window`.
+Default analysis set: `not is_test and not dup_key`. Daily or weekly trends also drop `possibly_incomplete_day`.

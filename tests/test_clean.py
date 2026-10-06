@@ -53,7 +53,7 @@ def test_cleaning_flags_rows_instead_of_dropping_them(cleaned):
 
 
 @pytest.mark.parametrize("flag, expected", [
-    ("created_out_of_window", 43),
+    ("out_of_file_order", 43),
     ("closed_placeholder", 367),
     ("closed_before_created", 2_921),
     ("is_test", 6),
@@ -143,3 +143,34 @@ def test_days_covered_by_a_missing_batch_are_flagged(tmp_path, sample_cfg, inges
     assert {dt.date(2010, 1, 15), dt.date(2010, 1, 16), dt.date(2010, 1, 17)} <= days
     assert dt.date(2010, 1, 13) not in days
     assert dt.date(2010, 1, 20) not in days
+
+
+def test_unordered_neighbor_files_do_not_flag_years_of_days(tmp_path):
+    import duckdb
+    part = tmp_path / "raw.parquet"
+    duckdb.sql(f"""copy (
+        select '311_batch_0001.json' as _file, strftime(timestamp '2015-01-01' + to_days(i % 3), '%Y-%m-%dT%H:%M:%S.000') as created_date
+        from range(100) t(i)
+        union all
+        select '311_batch_0003.json', strftime(timestamp '2015-01-01' + to_days(i * 14), '%Y-%m-%dT%H:%M:%S.000')
+        from range(100) t(i)
+        union all
+        select '311_batch_0004.json', strftime(timestamp '2019-01-05' + to_days(i % 2), '%Y-%m-%dT%H:%M:%S.000')
+        from range(100) t(i)
+    ) to '{part.as_posix()}' (format parquet)""")
+    manifest = pd.DataFrame({"file": ["311_batch_0001.json", "311_batch_0003.json", "311_batch_0004.json"],
+                             "parse_ok": [True, True, True]})
+    days = clean.incomplete_days(duckdb.connect(), f"read_parquet('{part.as_posix()}')", manifest)
+    assert len(days) < 10
+
+
+def test_any_open_status_counts_as_unresolved(cleaned):
+    from nyc311 import rules
+    assert "Closed" in rules.CLOSED_STATUSES and "Cancelled" in rules.NOT_UNRESOLVED_STATUSES
+    sql = clean.unresolved_sql("s")
+    con, _ = cleaned
+    got = con.sql(f"""select s, {sql} u from (values ('Closed'), ('In Progress'), ('Email Sent'), ('Cancelled'),
+                                                     ('Closed - Testing'), ('Draft'), (null), ('Pending')) t(s)""").df()
+    assert dict(zip(got.s.fillna("NULL"), got.u)) == {
+        "Closed": False, "In Progress": True, "Email Sent": True, "Cancelled": False,
+        "Closed - Testing": False, "Draft": False, "NULL": False, "Pending": True}

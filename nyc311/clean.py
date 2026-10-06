@@ -60,11 +60,14 @@ def incomplete_days(con, raw, manifest):
     days between the median dates of the files on either side of a missing batch number."""
     d = con.sql(f"""
         with r as (select _file, {CR} ts from {raw} r where r.created_date is not null),
-        m as (select _file, quantile_disc(ts, 0.5) med from r group by 1)
-        select _file, cast(any_value(med) as date) p50, max(cast(ts as date)) mx
-        from r join m using (_file) where abs(date_diff('day', med, ts)) <= {rules.OUT_OF_WINDOW_DAYS}
-        group by 1 order by 1""").df()
+        m as (select _file, quantile_disc(ts, 0.5) med from r group by 1),
+        j as (select _file, ts, med, abs(date_diff('day', med, ts)) <= {rules.OUT_OF_WINDOW_DAYS} inwin
+              from r join m using (_file))
+        select _file, cast(any_value(med) as date) p50, max(case when inwin then cast(ts as date) end) mx,
+               avg(inwin::int) ordered_share
+        from j group by 1 order by 1""").df()
     days = set()
+    d = d[d.ordered_share >= rules.ORDERED_FILE_SHARE]
     if d.empty:
         return days
     last = d.iloc[-1]
@@ -75,10 +78,21 @@ def incomplete_days(con, raw, manifest):
             days |= set(pd.date_range(row.p50.iloc[0], row.mx.iloc[0]).date)
     d["num"] = d._file.str.extract(r"_(\d+)\.json$", expand=False).astype(float)
     numbered = d.dropna(subset=["num"]).sort_values("num")
+    # d holds ordered files only, so a gap next to an out-of-order file (or between two ordered files that are
+    # not neighbors) is checked against the batch numbers actually present in the manifest.
+    present = set(manifest.file.str.extract(r"_(\d+)\.json$", expand=False).dropna().astype(int))
     for prev, nxt in zip(numbered.itertuples(), numbered.iloc[1:].itertuples()):
-        if nxt.num - prev.num > 1:
-            days |= set(pd.date_range(prev.p50 + pd.Timedelta(days=1), nxt.p50 - pd.Timedelta(days=1)).date)
+        between = set(range(int(prev.num) + 1, int(nxt.num)))
+        if not between or (between & present):
+            continue
+        days |= set(pd.date_range(prev.p50 + pd.Timedelta(days=1), nxt.p50 - pd.Timedelta(days=1)).date)
     return days
+
+
+def unresolved_sql(col):
+    not_open = rules.CLOSED_STATUSES + rules.NOT_UNRESOLVED_STATUSES + rules.TEST_STATUSES + rules.NULL_IF["status"]
+    vals = ", ".join("'" + v.replace("'", "''") + "'" for v in not_open)
+    return f"coalesce({col} is not null and trim({col}) not in ({vals}), false)"
 
 
 def _nullif(col, values):
@@ -140,7 +154,7 @@ def run(cfg):
                {_nullif('r.borough', rules.NULL_IF['borough'])} as borough_reported,
                cb.cb_borough, cb.cb_boro_cd, cb.cb_special_cd,
                t.canonical_type, t.category, t.origin, t.is_info_request, t.needs_review as type_needs_review,
-               coalesce(abs(date_diff('day', m.med, r.cr)) > {rules.OUT_OF_WINDOW_DAYS}, false) as created_out_of_window,
+               coalesce(abs(date_diff('day', m.med, r.cr)) > {rules.OUT_OF_WINDOW_DAYS}, false) as out_of_file_order,
                coalesce(cast(r.cr as date) in (select cast(d as date) from incomplete), false) as possibly_incomplete_day,
                coalesce(year(r.cl0) = {ph}, false) as closed_placeholder,
                coalesce(r.cl < r.cr, false) as closed_before_created,
@@ -148,7 +162,7 @@ def run(cfg):
                coalesce(r.cr = date_trunc('day', r.cr), false) as date_only_created,
                coalesce(r.cl = date_trunc('day', r.cl), false) as date_only_closed,
                {_in('r.status', rules.TEST_STATUSES)} as is_test,
-               {_in('r.status', rules.UNRESOLVED_STATUSES)} as unresolved,
+               {unresolved_sql('r.status')} as unresolved,
                coalesce(r.cl is not null and trim(r.status) <> 'Closed', false) as status_conflict,
                row_number() over (partition by r.unique_key order by r._file) > 1 as dup_key,
                case when trim(r.status) = 'Closed' and r.cl >= r.cr
@@ -193,7 +207,7 @@ def _report(con, cfg):
     rep = Report("03_clean", cfg.out_dir)
     n = con.sql(f"select count(*) from {src}").fetchone()[0]
     rep.add(f"rows in clean table: {n:,} (nothing dropped; flags below)")
-    flags = ["dup_key", "created_out_of_window", "possibly_incomplete_day", "is_test", "unresolved", "status_conflict",
+    flags = ["dup_key", "out_of_file_order", "possibly_incomplete_day", "is_test", "unresolved", "status_conflict",
              "closed_placeholder", "closed_before_created", "closed_at_creation", "closed_after_1yr",
              "date_only_created",
              "date_only_closed", "is_info_request", "type_needs_review"]

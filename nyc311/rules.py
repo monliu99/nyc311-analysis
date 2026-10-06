@@ -10,8 +10,12 @@ PLACEHOLDER_TOKENS = ["n/a", "na", "n/a n/a", "unspecified", "0 unspecified", "u
 # Dates starting with this are placeholders (closed_date 1900-01-01, due_date 1900-01-02).
 PLACEHOLDER_DATE_PREFIX = "1900-"
 
-# A row is "outside its file's window" if created more than this many days from the file's median.
+# A row is "out of file order" if created more than this many days from its file's median. Descriptive only:
+# on the full data a block of later batches holds backfilled older records, which are real requests.
 OUT_OF_WINDOW_DAYS = 30
+# A file counts as date-ordered if at least this share of its rows are within OUT_OF_WINDOW_DAYS of its median;
+# only ordered files are used to infer which days are incomplete.
+ORDERED_FILE_SHARE = 0.5
 
 # A day is "low volume" if its count is below this share of the centered 29-day rolling median.
 LOW_DAY_RATIO = 0.2
@@ -43,5 +47,8 @@ BORO_CODE = {"MANHATTAN": 1, "BRONX": 2, "BROOKLYN": 3, "QUEENS": 4, "STATEN ISL
 CD_COUNT = {"MANHATTAN": 12, "BRONX": 12, "BROOKLYN": 18, "QUEENS": 14, "STATEN ISLAND": 3}
 
 TEST_STATUSES = ["Closed - Testing", "Draft"]
-UNRESOLVED_STATUSES = ["Open", "Pending", "Assigned", "Started", "Unassigned"]  # "Unassigned" seen on the cluster
+# Unresolved = any real status that is not closed, cancelled, or a test (so new statuses like "In Progress",
+# "Email Sent", "Unassigned" count automatically). "Unspecified" is a placeholder (NULL_IF), not a status.
+CLOSED_STATUSES = ["Closed"]
+NOT_UNRESOLVED_STATUSES = ["Cancelled"]
 LONG_DURATION_HOURS = 365 * 24  # closed more than a year after opening
