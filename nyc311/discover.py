@@ -51,8 +51,9 @@ def key_duplicates(con, raw):
     cols = _columns(con, raw)
     sig = "md5(concat_ws('|', " + ", ".join(f"coalesce({_q(c)}, '<null>')" for c in cols) + "))"
     r = con.sql(f"""
-        with d as (select unique_key, count(*) n, count(distinct {sig}) nv
-                   from {_src(raw)} group by 1 having count(*) > 1)
+        with k as (select unique_key from {_src(raw)} group by 1 having count(*) > 1),
+        d as (select unique_key, count(*) n, count(distinct {sig}) nv
+              from {_src(raw)} semi join k using (unique_key) group by 1)
         select count(*), sum(n), count_if(nv = 1), count_if(nv > 1) from d""").fetchone()
     r = [int(x or 0) for x in r]
     return {"dup_keys": r[0], "dup_rows": r[1], "identical_copies": r[2], "conflicting_versions": r[3]}

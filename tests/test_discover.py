@@ -63,3 +63,14 @@ def test_run_writes_report_blocks_and_aggregates(sample_cfg, ingested):
     agg = sample_cfg.out_dir / "agg"
     for name in ["column_profile.csv", "complaint_types_raw.csv", "daily_by_agency.csv"]:
         assert (agg / name).exists(), name
+
+
+def test_duplicate_keys_split_into_identical_and_conflicting(tmp_path):
+    import duckdb
+
+    path = tmp_path / "dups.parquet"
+    duckdb.sql("""copy (select * from (values ('1','x','f1'), ('1','x','f2'), ('2','y','f1'), ('2','z','f2'),
+                                               ('3','w','f1')) t(unique_key, a, _file))
+                  to '%s' (format parquet)""" % path.as_posix())
+    assert discover.key_duplicates(duckdb.connect(), path.as_posix()) == {
+        "dup_keys": 2, "dup_rows": 4, "identical_copies": 1, "conflicting_versions": 1}

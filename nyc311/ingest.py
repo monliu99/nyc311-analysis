@@ -5,6 +5,7 @@ import json
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from functools import partial
 from pathlib import Path
 
@@ -109,8 +110,13 @@ def run(cfg):
     new = [f for f in files if os.path.basename(f) not in known]
 
     if new:
-        with ProcessPoolExecutor(max_workers=max(1, min(cfg.threads, len(new)))) as ex:
-            infos = list(ex.map(partial(scan_file, recovered_dir=recovered_dir), new, chunksize=4))
+        scan = partial(scan_file, recovered_dir=recovered_dir)
+        try:
+            with ProcessPoolExecutor(max_workers=max(1, min(cfg.threads, len(new)))) as ex:
+                infos = list(ex.map(scan, new, chunksize=4))
+        except BrokenProcessPool as e:
+            print(f"process pool unavailable ({e}); scanning {len(new):,} files one at a time")
+            infos = [scan(f) for f in new]
         scanned = pd.DataFrame(infos)
         manifest = pd.concat([old, scanned], ignore_index=True) if len(old) else scanned
         columns = sorted({k for ks in manifest["keys"] for k in ks.split("|") if k})

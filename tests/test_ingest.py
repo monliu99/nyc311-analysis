@@ -63,3 +63,18 @@ def test_second_run_skips_known_files(sample_cfg, ingested):
 
 def test_ingest_writes_downloadable_manifest(sample_cfg, ingested):
     assert (sample_cfg.out_dir / "agg" / "manifest.csv").exists()
+
+
+def test_scan_falls_back_to_one_process_when_pool_breaks(monkeypatch, tmp_path):
+    from concurrent.futures.process import BrokenProcessPool
+
+    from nyc311.config import Config
+
+    class Broken:
+        def __init__(self, *a, **k):
+            raise BrokenProcessPool("no workers on this node")
+
+    monkeypatch.setattr(ingest, "ProcessPoolExecutor", Broken)
+    cfg = Config.from_args(["--data", "data/sample/311_batch_000[12].json", "--out", str(tmp_path / "o"),
+                            "--work", str(tmp_path / "w"), "--threads", "2"])
+    assert ingest.run(cfg)["manifest"].n_records.sum() == 20_000
