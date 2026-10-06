@@ -1,0 +1,175 @@
+complaint_type,canonical_type,category,origin,is_info_request,notes
+HEATING,Housing - Heat,Heat & hot water,private,false,"HPD legacy ALL-CAPS code (descriptors HEAT, HEAT-PLANT), renamed into the Housing - family. Origin: owners must supply heat under the Housing Maintenance Code, so private even though cold weather drives volume."
+GENERAL CONSTRUCTION,Housing - General Construction,Housing conditions,private,false,"HPD ALL-CAPS code for apartment repairs (windows, mold, floors, doors, locks). Not DOB's General Construction/Plumbing (building-code enforcement); no shared descriptor."
+PLUMBING,Housing - Plumbing,Housing conditions,private,false,"HPD ALL-CAPS code: leaks, sinks, radiators, water supply. Kept apart from DOB 'Plumbing' (code enforcement: illegal work, sprinklers, gas piping); no shared descriptor. Listed before DOB 'Plumbing' so new spellings that normalize to 'plumbing' resolve here (the dominant meaning)."
+Noise - Residential,Noise - Residential,Noise,private,false,
+Street Light Condition,Street Light Condition,Streets & sidewalks,city,false,
+Street Condition,Street Condition,Streets & sidewalks,city,false,"Potholes, failed street repairs and cave-ins dominate; about 6% are utility plates or contractor work (private), but the roadway is city infrastructure."
+PAINT - PLASTER,Housing - Paint/Plaster,Housing conditions,private,false,"HPD ALL-CAPS code (walls, ceilings). Later HPD data spells it PAINT/PLASTER, which normalize() also matches."
+Literature Request,Literature Request - DSNY,Information requests,other,true,"DSNY recycling decals, flyers and guides. Renamed to match the HPD and OEM literature requests; the raw name hides which agency it is."
+NONCONST,Housing - Non-Construction,Housing conditions,private,false,"Cryptic HPD code for non-construction violations: vermin (70%), rubbish, smoke/CO detectors, janitor. Vermin in an apartment is the owner's duty to exterminate, so private rather than natural."
+Traffic Signal Condition,Traffic Signal Condition,Streets & sidewalks,city,false,
+Water System,Water System,Water & sewer,city,false,"Leaks, hydrants, low pressure, main breaks: DEP infrastructure. Some running hydrants are opened by people, a minority."
+Blocked Driveway,Blocked Driveway,Traffic & parking,private,false,
+General Construction/Plumbing,General Construction/Plumbing,Buildings & construction,private,false,"DOB building-code enforcement (no permit, sidewalk sheds, unsafe sites, failure to maintain). Distinct from HPD GENERAL CONSTRUCTION."
+ELECTRIC,Housing - Electric,Housing conditions,private,false,"HPD ALL-CAPS code (supply, wiring, lighting, buzzer/intercom). Kept apart from DOB 'Electrical' (code enforcement); no shared descriptor."
+Sewer,Sewer,Water & sewer,city,false,"Sewer backups, catch basins, manholes: DEP infrastructure. Street flooding (about 4%) is weather-related."
+Traffic/Illegal Parking,Traffic/Illegal Parking,Traffic & parking,private,false,
+Dirty Conditions,Dirty Conditions,Sanitation & cleanliness,private,false,"DSNY E-codes: illegal postering, dirty sidewalks, dog waste, improper disposal, illegal dumping."
+Building/Use,Building/Use,Buildings & construction,private,false,"DOB: illegal conversions and occupancy violations."
+DHS Advantage - Tenant,DHS Advantage - Tenant,Social services & education,other,true,"Advantage rent-subsidy program questions (lease expiring or renewal, other issue): program casework, not a condition."
+Sanitation Condition,Sanitation Condition,Sanitation & cleanliness,other,false,"Judgment call: mixed causes. Street dump-out/drop-off (70%), dead animals (28%), weeds. Origin left as other."
+Graffiti,Graffiti,Sanitation & cleanliness,private,false,"Two agencies use this type: DSNY (cleanup) and NYPD (police report)."
+Missed Collection (All Materials),Missed Collection,Sanitation & cleanliness,city,false,"Dropped '(All Materials)': the descriptor already splits refuse, recycling and bulk."
+SCRIE,SCRIE,Social services & education,other,true,"Senior Citizen Rent Increase Exemption: recertification, assistance, application problems. Benefit-program casework (DOF), not a condition."
+Noise,Noise - Construction/Equipment/Animals,Noise,private,false,"Generic-looking name, but it is DEP's own noise type, not a parent of the NYPD Noise - * types: construction (46%), barking dogs (23%), AC/ventilation (15%), alarms. Renamed so it no longer reads as 'all noise'."
+DOF Parking - Payment Issue,DOF Parking - Payment Issue,Taxes & finance,other,false,"Ticket payment processing (no confirmation number, charged twice, late-penalty waiver): an account issue, not a neighborhood condition."
+Noise - Commercial,Noise - Commercial,Noise,private,false,
+Taxi Complaint,Taxi Complaint,Consumer & licensing,private,false,"TLC complaints about drivers and vehicles. One letter away from 'Taxi Compliment'."
+Rodent,Rodent,Health & environment,natural,false,"Judgment call: rat/mouse sightings and signs (66%) counted as natural; 34% are 'Condition Attracting Rodents' (garbage), which could be private. Apartment vermin is under HPD Housing - Non-Construction."
+Consumer Complaint,Consumer Complaint,Consumer & licensing,private,false,
+Derelict Vehicle,Derelict Vehicle,Traffic & parking,private,false,"Merged with 'Derelict Vehicles': same condition (an abandoned car), routed by whether it has plates (NYPD with plates, DSNY without). The agency column keeps the routing."
+APPLIANCE,Housing - Appliance,Housing conditions,private,false,"HPD ALL-CAPS code (stove/range, refrigerator)."
+DOF Property - Owner Issue,DOF Property - Owner Issue,Taxes & finance,other,false,"Billing name/address corrections: administrative."
+Broken Muni Meter,Broken Muni Meter,Traffic & parking,city,false,"Kept apart from Broken Parking Meter: different hardware (pay-and-display vs single-space meter), although the descriptors overlap."
+Sidewalk Condition,Sidewalk Condition,Streets & sidewalks,private,false,"Judgment call: NYC property owners must repair the sidewalk in front of their building; descriptors are broken sidewalks, owner violations and construction blockages. Could be read as city (DOT inspects)."
+Damaged Tree,Damaged Tree,Trees & parks,natural,false,"Fallen or cracked branches and trees, mostly wind/storm/ice."
+Derelict Vehicles,Derelict Vehicle,Traffic & parking,private,false,"Merged into 'Derelict Vehicle' (plural spelling, DSNY's cars without plates)."
+DHS Advantage -Landlord/Broker,DHS Advantage - Landlord/Broker,Social services & education,other,true,"Spacing fixed. Judgment call: 54% are 'Payment Not Received from DHS', which could be read as a city service failure; treated as program casework like the tenant type."
+DOF Property - Request Copy,DOF Property - Request Copy,Information requests,other,true,"Copies of statements and account information."
+HPD Literature Request,Literature Request - HPD,Information requests,other,true,"Tenant/landlord brochures, Mitchell-Lama list. Renamed to the Literature Request - <agency> pattern."
+Street Sign - Damaged,Street Sign - Damaged,Streets & sidewalks,city,false,
+Elevator,Elevator,Buildings & construction,private,false,"DOB: defective or uninspected elevators, the owner's responsibility."
+DOF Property - Reduction Issue,DOF Property - Reduction Issue,Taxes & finance,other,false,"Exemption/abatement problems (STAR, SCHE, veteran): administrative."
+Snow,Snow,Streets & sidewalks,natural,false,"Weather-driven. Re-plow requests (city) and icy sidewalks (owners) are minorities."
+Noise - Vehicle,Noise - Vehicle,Noise,private,false,
+DCA / DOH New License Application Request,DCA/DOH New License Application Request,Consumer & licensing,other,true,"Spacing fixed. License applications (street and food vendors, contractors): a service request. DCA is now DCWP."
+Indoor Air Quality,Indoor Air Quality,Health & environment,private,false,"DOHMH indoor air (vapors, ventilation). Kept apart from DEP's outdoor 'Air Quality'."
+DOF Property - Payment Issue,DOF Property - Payment Issue,Taxes & finance,other,false,"Property-tax billing and refunds: administrative."
+Air Quality,Air Quality,Health & environment,private,false,"DEP outdoor air: idling vehicles, smoke, restaurant odors, dust."
+Food Establishment,Food Establishment,Health & environment,private,false,
+Broken Parking Meter,Broken Parking Meter,Traffic & parking,city,false,"Kept apart from Broken Muni Meter (different hardware)."
+Water Conservation,Water Conservation,Water & sewer,private,false,"Judgment call: broken/leaking water meters at private premises (82%) and wasted water; owners maintain service lines and fixtures. Could be city if meters count as DEP equipment."
+Noise - Street/Sidewalk,Noise - Street/Sidewalk,Noise,private,false,
+Street Sign - Missing,Street Sign - Missing,Streets & sidewalks,city,false,
+Root/Sewer/Sidewalk Condition,Root/Sewer/Sidewalk Condition,Trees & parks,natural,false,"Judgment call: street-tree roots lifting sidewalks or reaching sewers. Natural growth, though the trees are city-owned (could be city)."
+Non-Residential Heat,Non-Residential Heat,Heat & hot water,private,false,"DOHMH: inadequate heat in workplaces and commercial space; the owner's duty."
+Housing Options,Housing Options,Information requests,other,true,"DFTA information for seniors on assisted living and nursing homes."
+Electrical,Electrical,Buildings & construction,private,false,"DOB code enforcement (defective/exposed wiring). Kept apart from HPD ELECTRIC."
+Overgrown Tree/Branches,Overgrown Tree/Branches,Trees & parks,natural,false,"Branches growing into buildings, wires, streets. Natural; a pruning backlog could make it city."
+Other Enforcement,Other Sanitation Enforcement,Sanitation & cleanliness,private,false,"Generic name; descriptors are DSNY sanitation-code violations (sidewalk obstruction, receptacle storage, commercial waste)."
+New Tree Request,New Tree Request,Trees & parks,other,true,"Request to plant a street tree: a service request."
+Plumbing,Plumbing,Buildings & construction,private,false,"DOB code enforcement: drainage, illegal plumbing work, gas piping, sprinklers. Kept apart from HPD PLUMBING (apartment repairs); no shared descriptor."
+Special Projects Inspection Team (SPIT),Special Projects Inspection Team (SPIT),Buildings & construction,private,false,"A DOB unit name, not a condition: illegal signs and awnings, illegal hotel rooms, accessibility."
+Boilers,Boilers,Buildings & construction,private,false,
+Food Poisoning,Food Poisoning,Health & environment,private,false,
+Dead Tree,Dead Tree,Trees & parks,natural,false,
+DOF Parking - Request Copy,DOF Parking - Request Copy,Information requests,other,true,"Ticket images, decisions, lists of tickets."
+Maintenance or Facility,Maintenance or Facility,Trees & parks,city,false,"DPR park structures, litter, graffiti: park maintenance."
+Smoking,Smoking,Health & environment,private,false,
+Highway Condition,Highway Condition,Streets & sidewalks,city,false,
+Street Sign - Dangling,Street Sign - Dangling,Streets & sidewalks,city,false,
+Non-Emergency Police Matter,Non-Emergency Police Matter,Public safety & conduct,private,false,"Trespassing and other police matters."
+Emergency Response Team (ERT),Emergency Response Team (ERT),Buildings & construction,private,false,"A DOB unit name: illegal after-hours work."
+For Hire Vehicle Complaint,For Hire Vehicle Complaint,Consumer & licensing,private,false,
+Vending,Vending,Consumer & licensing,private,false,"NYPD: unlicensed vendors or vending in prohibited areas."
+Litter Basket / Request,Litter Basket Request,Sanitation & cleanliness,other,true,"Spacing fixed. Judgment call: read as a request for a litter basket (service request), not a complaint."
+Lead,Lead Test Kit Request,Water & sewer,other,true,"Vague name; every descriptor is a lead-in-water test kit request (a service request)."
+Animal in a Park,Animal in a Park,Trees & parks,natural,false,"Judgment call: mostly wildlife (injured, sightings, removal, dead); off-leash dogs and strays (31%) are people-caused."
+Hazardous Materials,Hazardous Materials,Health & environment,private,false,
+Unsanitary Animal Pvt Property,Unsanitary Animal - Private Property,Health & environment,private,false,"Abbreviation expanded. Animal waste/odor from animals kept on private property."
+School Maintenance,School Maintenance,Social services & education,city,false,
+Asbestos,Asbestos,Health & environment,private,false,"Two agencies use this type (DEP, DOHMH); building owners and contractors."
+Industrial Waste,Industrial Waste,Water & sewer,private,false,"Businesses discharging grease, oil, chemicals into sewers and catch basins."
+Vacant Lot,Vacant Lot,Sanitation & cleanliness,private,false,"Request to clean a vacant lot: the lot owner's duty."
+Investigations and Discipline (IAD),Investigations and Discipline (IAD),Buildings & construction,private,false,"A DOB unit name: unlicensed electrical/plumbing work."
+Bus Stop Shelter Complaint,Bus Stop Shelter Complaint,Streets & sidewalks,city,false,"Broken glass, lighting, dirt at bus shelters (city-franchised street furniture)."
+DOF Parking - Request Status,DOF Parking - Request Status,Information requests,other,true,"Status of hearings and appeals."
+OEM Literature Request,Literature Request - OEM,Information requests,other,true,"Ready NY emergency-preparedness guides. Renamed to the Literature Request - <agency> pattern; OEM is now NYCEM."
+DOF Property - City Rebate,DOF Property - City Rebate,Information requests,other,true,"Mostly status questions about the property-tax rebate check."
+Home Repair,Home Repair,Social services & education,other,true,"DFTA home-repair help for seniors: a service request."
+Public Payphone Complaint,Public Payphone Complaint,Consumer & licensing,private,false,"Privately operated payphones franchised by DoITT: damaged phones, lost coins."
+Elder Abuse,Elder Abuse,Social services & education,private,false,"A report of abuse by a person: a complaint, not a request."
+Illegal Tree Damage,Illegal Tree Damage,Trees & parks,private,false,
+Recycling Enforcement,Recycling Enforcement,Sanitation & cleanliness,private,false,
+Curb Condition,Curb Condition,Streets & sidewalks,city,false,"Judgment call: broken curbs counted as street infrastructure (city), unlike sidewalks (owners)."
+HEAP Assistance,HEAP Assistance,Social services & education,other,true,"Home Energy Assistance Program help: a benefit request."
+DHS Advantage - Third Party,DHS Advantage - Third Party,Social services & education,other,true,"Advantage rent-subsidy program casework."
+Unleashed Dog,Unleashed Dog,Health & environment,private,false,
+BEST/Site Safety,BEST/Site Safety,Buildings & construction,private,false,
+Overflowing Litter Baskets,Overflowing Litter Baskets,Sanitation & cleanliness,city,false,"How often baskets are emptied is a DSNY service."
+Window Guard,Window Guard,Housing conditions,private,false,"DOHMH: missing window guards in apartments, the owner's legal duty."
+Weatherization,Weatherization,Social services & education,other,true,"DFTA weatherization assistance: a program request."
+Homeless Encampment,Homeless Encampment,Public safety & conduct,private,false,"Judgment call: counted as actions of people in the neighborhood (NYPD). Could be framed as a city social-services gap."
+DOF Parking - Address Update,DOF Parking - Address Update,Taxes & finance,other,true,"Records update: a transaction, not a complaint."
+CONSTRUCTION,Housing - Construction,Housing conditions,private,false,"HPD ALL-CAPS code: roof, elevator, pavement, rain leader. Kept apart from HPD GENERAL CONSTRUCTION (no shared descriptor)."
+Sweeping/Missed-Inadequate,Sweeping - Missed/Inadequate,Sanitation & cleanliness,city,false,"Punctuation standardized. Missed or inadequate street sweeping."
+Drinking,Drinking,Public safety & conduct,private,false,"Alcohol (underage, after hours, in public). Unrelated to DOHMH 'Drinking Water' despite the shared word."
+DOF Parking - DMV Clearance,DOF Parking - DMV Clearance,Taxes & finance,other,true,"Registration clearance request: a transaction, not a complaint."
+Safety,School Safety,Social services & education,private,false,"Vague name; DOE descriptors are school safety, harassment, altercations (student behavior, so private)."
+Water Quality,Water Quality,Water & sewer,city,false,"Taste, odor, cloudy tap water: DEP supply (building plumbing could be private)."
+Eviction,Senior Eviction Assistance,Social services & education,other,true,"Vague name; DFTA descriptors are mobile/homebound seniors asking for eviction help."
+Noise - House of Worship,Noise - House of Worship,Noise,private,false,
+Utility Program,Utility Program,Social services & education,other,true,"DFTA utility assistance program."
+Taxi Compliment,Taxi Compliment,Consumer & licensing,other,true,"A compliment, not a complaint; one letter away from 'Taxi Complaint'."
+Disorderly Youth,Disorderly Youth,Public safety & conduct,private,false,
+Unsanitary Pigeon Condition,Unsanitary Pigeon Condition,Health & environment,natural,false,"Pigeon waste and odor: animals (people feeding them may contribute)."
+Found Property,Found Property,Information requests,other,true,"TLC lost-and-found reports for taxis."
+Bridge Condition,Bridge Condition,Streets & sidewalks,city,false,
+Discipline and Suspension,Discipline and Suspension,Social services & education,city,false,"DOE suspension process and student rights: the school system's actions."
+Posting Advertisement,Posting Advertisement,Public safety & conduct,private,false,
+Ferry Inquiry,Ferry Inquiry,Information requests,other,true,"Staten Island Ferry lost and found and general inquiries."
+Alzheimer's Care,Alzheimer's Care,Social services & education,other,true,
+Teaching/Learning/Instruction,Teaching/Learning/Instruction,Social services & education,city,false,
+Parking Card,Parking Card,Traffic & parking,city,false,"Parking card not dispensed by a DOT vending machine."
+City Vehicle Placard Complaint,City Vehicle Placard Complaint,Traffic & parking,city,false,"Misuse of city-issued parking placards by city employees: the city's own actions."
+Violation of Park Rules,Violation of Park Rules,Trees & parks,private,false,
+Senior Center Complaint,Senior Center Complaint,Social services & education,city,false,"City-funded senior centers (DFTA)."
+Cranes and Derricks,Cranes and Derricks,Buildings & construction,private,false,
+DOF Property - Property Value,DOF Property - Property Value,Taxes & finance,other,false,"Assessment dispute: administrative."
+Miscellaneous Categories,FDNY Referral (DOB),Buildings & construction,other,false,"Generic name; every row is 'FDNY Referral - Pilot' sent to DOB. The condition is unknown, so origin other."
+Bus Stop Shelter Placement,Bus Stop Shelter Placement,Streets & sidewalks,other,true,"Request for a new or relocated shelter."
+Noise - Park,Noise - Park,Noise,private,false,
+Scaffold Safety,Scaffold Safety,Buildings & construction,private,false,
+Health,School Health,Social services & education,city,false,"Vague name; DOE descriptors are unhealthy conditions in schools."
+Ferry Complaint,Ferry Complaint,Other,city,false,"Staten Island Ferry service (DOT)."
+DOF Property - RPIE Issue,DOF Property - RPIE Issue,Taxes & finance,other,false,"Income and expense filing issues: administrative."
+Home Delivered Meal - Missed Delivery,Home Delivered Meal - Missed Delivery,Social services & education,city,false,"City-funded meals (DFTA contractors). Kept apart from the generic Home Delivered Meal Complaint."
+Plant,Wastewater Treatment Plant,Water & sewer,city,false,"Vague name; DEP codes PO1/PN1 are odor/noise from DEP plants, read as wastewater treatment plants (judgment call on the name)."
+Illegal Animal Kept as Pet,Illegal Animal Kept as Pet,Health & environment,private,false,
+Urinating in Public,Urinating in Public,Public safety & conduct,private,false,
+Home Delivered Meal Complaint,Home Delivered Meal Complaint,Social services & education,city,false,"City-funded meals (DFTA contractors)."
+Bike/Roller/Skate Chronic,Bike/Roller/Skate Chronic,Public safety & conduct,private,false,
+Collection Truck Noise,Noise - Collection Truck,Noise,city,false,"Renamed into the Noise - family. DSNY's own collection trucks, so city (private carting noise is under DEP noise)."
+Tattooing,Tattooing,Health & environment,private,false,
+Registration and Transfers,Registration and Transfers,Social services & education,other,true,"School registration and transfer requests."
+Stalled Sites,Stalled Sites,Buildings & construction,private,false,
+Mold,Mold,Health & environment,private,false,"DOHMH mold at commercial or workplace locations; apartment mold is under HPD Housing - General Construction."
+Animal Facility - No Permit,Animal Facility - No Permit,Health & environment,private,false,
+Highway Sign - Damaged,Highway Sign - Damaged,Streets & sidewalks,city,false,
+Parent Leadership,Parent Leadership,Social services & education,city,false,
+Panhandling,Panhandling,Public safety & conduct,private,false,
+Highway Sign - Missing,Highway Sign - Missing,Streets & sidewalks,city,false,
+Highway Sign - Dangling,Highway Sign - Dangling,Streets & sidewalks,city,false,
+Transportation Provider Complaint,Transportation Provider Complaint,Social services & education,city,false,"DFTA-contracted senior transportation."
+Calorie Labeling,Calorie Labeling,Health & environment,private,false,
+Home Care Provider Complaint,Home Care Provider Complaint,Social services & education,city,false,"DFTA-contracted home care."
+Municipal Parking Facility,Municipal Parking Facility,Traffic & parking,city,false,
+Drinking Water,Drinking Water,Health & environment,other,false,"Illness blamed on drinking water; source (city supply or building) unknown, so other."
+Unsanitary Animal Facility,Unsanitary Animal Facility,Health & environment,private,false,
+Ferry Permit,Ferry Permit,Consumer & licensing,other,true,"Permit to perform on the ferry: a request."
+Illegal Fireworks,Illegal Fireworks,Public safety & conduct,private,false,
+Bereavement Support Group,Bereavement Support Group,Social services & education,other,true,
+Case Management Agency Complaint,Case Management Agency Complaint,Social services & education,city,false,"DFTA-contracted case management."
+Beach/Pool/Sauna Complaint,Beach/Pool/Sauna Complaint,Health & environment,private,false,
+Legal Services Provider Complaint,Legal Services Provider Complaint,Social services & education,city,false,"DFTA-contracted legal services."
+Illegal Animal Sold,Illegal Animal Sold,Health & environment,private,false,
+No Child Left Behind,No Child Left Behind,Social services & education,other,true,"School choice/transfer requests."
+Special Natural Area District (SNAD),Special Natural Area District (SNAD),Buildings & construction,private,false,"Illegal tree removal or grading in a special natural area (DOB)."
+Poison Ivy,Poison Ivy,Health & environment,natural,false,
+Bottled Water,Bottled Water,Health & environment,private,false,
+Squeegee,Squeegee,Public safety & conduct,private,false,
+Portable Toilet,Portable Toilet,Health & environment,private,false,
+Radioactive Material,Radioactive Material,Health & environment,private,false,
+Tunnel Condition,Tunnel Condition,Streets & sidewalks,city,false,
+Harboring Bees/Wasps,Harboring Bees/Wasps,Health & environment,natural,false,
