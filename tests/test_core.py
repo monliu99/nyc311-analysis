@@ -75,3 +75,38 @@ def test_report_table_says_how_many_rows_were_cut(tmp_path):
     text = rep.emit()
     assert "Counts" in text
     assert "(2 of 3 rows shown)" in text
+
+
+def test_threads_default_is_capped_when_slurm_is_silent(monkeypatch, tmp_path):
+    import os
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 128, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 128)
+    assert _cfg(tmp_path).threads == 16
+
+
+def test_memory_limit_follows_slurm_allocation(monkeypatch, tmp_path):
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "16000")
+    assert _cfg(tmp_path).memory_limit == "11GB"
+
+
+def test_memory_limit_from_per_cpu_allocation(monkeypatch, tmp_path):
+    monkeypatch.delenv("SLURM_MEM_PER_NODE", raising=False)
+    monkeypatch.setenv("SLURM_MEM_PER_CPU", "4000")
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "4")
+    assert _cfg(tmp_path).memory_limit == "11GB"
+
+
+def test_explicit_memory_limit_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "16000")
+    assert _cfg(tmp_path, "--memory-limit", "48GB").memory_limit == "48GB"
+
+
+def test_cgroup_limit_is_read_and_unlimited_is_ignored(tmp_path):
+    from nyc311 import config
+    capped = tmp_path / "memory.max"
+    capped.write_text("17179869184\n")
+    unlimited = tmp_path / "unlimited"
+    unlimited.write_text("max\n")
+    assert config.cgroup_limit_bytes([unlimited, capped]) == 17179869184
+    assert config.cgroup_limit_bytes([unlimited, tmp_path / "missing"]) is None

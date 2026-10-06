@@ -16,6 +16,7 @@ hash matches the one recorded in SOURCES.md (EXPECTED_SHA256 below).
 Stdlib only. Downloaded files are parsed as data (csv/json/zip members read in
 memory); nothing from them is executed or extracted to disk.
 """
+from __future__ import annotations
 
 from __future__ import annotations
 

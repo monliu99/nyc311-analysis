@@ -17,3 +17,31 @@ OUT_OF_WINDOW_DAYS = 30
 LOW_DAY_RATIO = 0.2
 # Runs of at least this many zero-count days are reported as empty stretches, not day by day.
 EMPTY_STRETCH_DAYS = 7
+
+# ---- Cleaning decisions (settled 2026-10-06 from discovery on the 20 local files) ----
+# Nothing is deleted: every rule sets a value to NULL or adds a flag column; each question decides what to exclude.
+
+# Exact values (after trim) that mean "missing", by column. "Other" in location_type is a real category, so it stays.
+NULL_IF = {
+    "borough": ["Unspecified"],
+    "park_borough": ["Unspecified"],
+    "open_data_channel_type": ["UNKNOWN"],
+    "facility_type": ["N/A"],
+    "park_facility_name": ["Unspecified"],
+    "location_type": ["N/A"],
+    "descriptor": ["N/A"],
+    "city": ["N/A", "NA"],
+    "status": ["Unspecified"],
+}
+PLACEHOLDER_YEAR = 1900  # closed_date 1900-01-01 and due_date 1900-01-02 become NULL
+
+# NYC ZIP codes are 100xx-104xx and 110xx-116xx; ZIP+4 keeps its first five digits; anything else becomes NULL.
+NYC_ZIP_PATTERN = r"^1(0[0-4]|1[0-6])\d{2}$"
+
+BORO_CODE = {"MANHATTAN": 1, "BRONX": 2, "BROOKLYN": 3, "QUEENS": 4, "STATEN ISLAND": 5}
+# Standard community districts per borough; higher numbers in community_board are parks/airports ("special areas").
+CD_COUNT = {"MANHATTAN": 12, "BRONX": 12, "BROOKLYN": 18, "QUEENS": 14, "STATEN ISLAND": 3}
+
+TEST_STATUSES = ["Closed - Testing", "Draft"]
+UNRESOLVED_STATUSES = ["Open", "Pending", "Assigned", "Started"]
+LONG_DURATION_HOURS = 365 * 24  # closed more than a year after opening
