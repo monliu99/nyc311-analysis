@@ -110,3 +110,11 @@ def test_cgroup_limit_is_read_and_unlimited_is_ignored(tmp_path):
     unlimited.write_text("max\n")
     assert config.cgroup_limit_bytes([unlimited, capped]) == 17179869184
     assert config.cgroup_limit_bytes([unlimited, tmp_path / "missing"]) is None
+
+
+def test_report_shows_missing_text_as_null_left_aligned(tmp_path):
+    rep = Report("nulls", tmp_path)
+    rep.table(pd.DataFrame({"value": [None, "Closed"], "n": [5, 7]}))
+    lines = rep.emit().splitlines()
+    assert lines[2].startswith("NULL ")
+    assert "NaN" not in "\n".join(lines) and "None" not in "\n".join(lines)

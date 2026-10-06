@@ -22,14 +22,69 @@ python run_all.py --data "/path/to/311_batch_*.json" --work /persistent/path/wor
 
 ## Cluster run #1 (discovery)
 
-1. Upload this folder **without `data/sample/`** (that's 222 MB of local test data). Zipping it is easiest:
-   from the parent folder, `zip -r nyc311_lab.zip nyc311_lab -x 'nyc311_lab/data/sample/*' 'nyc311_lab/.git/*' 'nyc311_lab/.superpowers/*'`.
-2. Open `lab.ipynb` from inside the uploaded folder. In the Settings cell, set `DATA` to the path pattern for the
-   2,000 files, and `WORK` to persistent storage with about 5 GB free. Keep `WORK` between runs: later runs then skip
-   files already converted.
-3. Run every cell. The first installs `requirements.txt`. Stage 1 should take a few minutes.
-4. Download the zip that the last cell prints (`outputs_bundle.zip`, well under 50 MB). Unzip it into
-   `cluster_outputs/run1/` here.
+**The cluster (checked 2026-10-06):** one Jupyter kernel, Python 3.9.24 with pip 21.3.1 (the shared Python isn't
+writable, so packages go to `~/.local` with `--user`); the job has 4 CPUs (`SLURM_CPUS_PER_TASK=4`) and 32 GB
+(`SLURM_MEM_PER_NODE=32768`) on a 128-CPU node; workers start with `fork`. The data is
+`/gpfs/project/esai_2026/data/311/311_batch_*.json`: 2,824 files, 33.3 GB, 28.24M rows, batch numbers 0001-2843
+(about 20 numbers missing; 02a lists them). Treat it as read-only. The code works on Python 3.9-3.14 with
+duckdb >= 1.1, pandas >= 2.0 and pyarrow >= 15. The full test suite passes on the cluster's exact stack (duckdb 1.4.5,
+pandas 2.3.3, numpy 2.0.2, pyarrow 21.0.0) and on the current one (Python 3.14, duckdb 1.5, pandas 3.0).
+
+**Check the environment first** (a scratch cell; nothing to install):
+
+```python
+import os, sys, glob, shutil, multiprocessing as mp
+files = sorted(glob.glob("/gpfs/project/esai_2026/data/311/311_batch_*.json")); work = os.path.expanduser("~/esai_311_work")
+print(sys.version.split()[0], mp.get_start_method(), "| CPUs:", len(os.sched_getaffinity(0)), "| SLURM CPUs/MB:", os.environ.get("SLURM_CPUS_PER_TASK"), os.environ.get("SLURM_MEM_PER_NODE"))
+print(len(files), "files,", round(sum(map(os.path.getsize, files)) / 1e9, 1), "GB:", files[:1], "..", files[-1:])
+os.makedirs(work, exist_ok=True); print("WORK:", work, shutil.disk_usage(work).free // 10**9, "GB free")
+```
+
+Expect `3.9.24 fork | CPUs: 4 | SLURM CPUs/MB: 4 32768`, `2824 files, 33.3 GB`, and at least 20 GB free.
+
+**Steps**
+
+1. Upload this folder without the local data and run state. From the parent folder:
+   `zip -r nyc311_lab.zip nyc311_lab -x 'nyc311_lab/data/sample/*' 'nyc311_lab/work/*' 'nyc311_lab/outputs/*' 'nyc311_lab/cluster_outputs/*' 'nyc311_lab/*.zip' 'nyc311_lab/.git/*' 'nyc311_lab/.superpowers/*' 'nyc311_lab/.pytest_cache/*' '*/__pycache__/*'`.
+   Never upload `work/`: it holds the sample's manifest, and the cluster run would reuse it.
+2. Open `lab.ipynb`. Cell 1 finds the code folder (set `CODE` if Jupyter starts elsewhere). Cell 2 runs
+   `%pip install --user -q -r requirements.txt`; the first time only, run it, then **Kernel > Restart**, then run
+   cell 1 again and skip to cell 3.
+3. In Settings (cell 3) set `DATA = "/gpfs/project/esai_2026/data/311/311_batch_*.json"` and
+   `WORK = "/gpfs/home/<netid>/esai_311_work"`, and leave `THREADS` and `MEMORY_LIMIT` at `None` (the defaults
+   follow the SLURM job: 4 threads, DuckDB memory limit 22GB). The cell prints the package versions and the `00_env`
+   block; check that it shows 2,824 files and no WARNING lines.
+4. Run cell 4 (ingest + discovery), then cell 5, which prints the zip to download (`outputs_bundle.zip`, a few MB).
+   Unzip it into `cluster_outputs/run1/` here.
+
+Without Jupyter (inside the same SLURM job, not on a login node), steps 3-4 are:
+`python3 run_all.py --data "/gpfs/project/esai_2026/data/311/311_batch_*.json" --work /gpfs/home/<netid>/esai_311_work --stages ingest,discover`.
+
+**Time and memory.** Ingest took 171 s for the 2,824 files on the cluster (4 CPUs). Discovery on a 27.6M-row
+synthetic copy took 75 s on a laptop with 4 threads and a peak of 1.7 GB, so plan for 3-5 minutes on the cluster.
+Both scale linearly: 20M+ rows show no superlinear step (`tools/make_synthetic_batches.py` builds the test data).
+Ingest peaks at about 1.1 GB (main process plus 4 workers of ~150 MB each), and that doesn't grow with the number
+of files, because it works 100 files at a time. Discovery stays under the DuckDB memory limit. Either way, the
+32 GB job has plenty of room.
+
+**WORK size.** The raw Parquet copy is 4-12% of the JSON (1.5-4 GB for 33 GB). Cleaning adds a copy of similar
+size, and DuckDB spills to `WORK/duckdb_tmp` when a query exceeds the memory limit. Files that need a clean copy
+(cut off, invalid UTF-8) add their own size under `WORK/recovered`. Allow about 20 GB; the `00_env` block warns
+when WORK has less than half the JSON size free. Keep WORK on GPFS home, which has plenty of space, not in `/tmp`
+(cleared between jobs) or inside the code folder.
+
+**Threads and memory.** Keep the defaults. To change them, set `THREADS` or `MEMORY_LIMIT` (`--threads`,
+`--memory-limit`). Never set more threads than the job has CPUs. If DuckDB stops with "Out of Memory", set
+`MEMORY_LIMIT = "16GB"`; DuckDB then spills more to WORK. If the kernel dies during ingest, set `THREADS = 2`.
+
+**If it dies halfway, rerun the same cell (or command) with the same WORK.** Ingest records a batch of 100 files in
+`WORK/manifest.parquet` only after their Parquet part is completely written (under a temporary name, then
+renamed), so the manifest never lists a file whose rows aren't in Parquet. On a rerun it deletes any part that the
+manifest doesn't list, then converts only the files it doesn't have yet. A file that couldn't be read (for example,
+permission denied) is retried on the next run. Discovery keeps no state, so it simply runs again. A WORK folder
+written by the first version of ingest (such as `/gpfs/home/ml3338/esai_311_work`) is upgraded in place on the next
+ingest, in seconds and without rescanning; discovery reads it either way. Only if a data file changes size does
+ingest stop with "delete WORK and rerun".
 
 If something fails, paste the error and the `00_env` block.
 
