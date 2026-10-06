@@ -118,3 +118,25 @@ One row per raw row. Read with `from nyc311.clean import clean_glob` then `con.s
 - **Flags (boolean):** `dup_key`, `out_of_file_order`, `possibly_incomplete_day`, `is_test`, `unresolved`, `status_conflict`, `closed_placeholder`, `closed_before_created`, `closed_at_creation`, `closed_after_1yr`, `date_only_created`, `date_only_closed`.
 
 Default analysis set: `not is_test and not dup_key`. Daily or weekly trends also drop `possibly_incomplete_day`.
+
+## Question modules (contract for every `nyc311/qNN_*.py`)
+
+- **Names** are fixed in `nyc311/config.py` (`STAGE_MODULES`): `q01_missing`, `q02_timing`, `q03_complaint_types`,
+  `q04_response_times`, `q05_top_types`, `q06_weather`, `q07_geography`, `q08_dashboard`, `q09_equity`,
+  `q10_features`, `q11_summary`. Each exposes `run(cfg)`; `run_all.py` and `lab.ipynb` call it.
+- **Inputs:** the clean table via `from nyc311.clean import clean_glob` (`con = cfg.connect()`), and `data/external/`
+  for weather, district polygons and demographics. Raw text columns, if needed, via
+  `read_parquet('<raw glob>', union_by_name=true)`.
+- **Scale:** the cluster data is 28.24M rows (Jan 1 2010 - Nov 20 2021), 4 threads, 22 GB for DuckDB. Aggregate in
+  DuckDB and pull only small results into pandas. Regressions run on a fixed-seed sample
+  (`using sample reservoir(1000000 rows) repeatable (42)`).
+- **Outputs:** one report block named `qNN_<slug>` (via `nyc311.report.Report`), charts in `outputs/figs/qNN_*.png`
+  (nyt-charts style: `from nyc311 import nytplot as nyt`), small tables in `outputs/agg/qNN_*.csv`, bullet findings
+  in `outputs/answers/qNN.md`. Every number in text is computed at run time.
+- **Facts about the full data to design for:** 12 years with a 2020 surge (June-August above 300k/month); late
+  2021 incomplete (24 flagged days); HPD opening times are date-only before about 2015; about 1.04M requests close
+  at the second they open; 478 raw complaint types (Q3 maps them); a backfilled block of older DOB records.
+  Full-run aggregates for reference while building (never read at run time): `cluster_outputs/full/outputs/agg/`.
+- **Tests:** `tests/test_qNN*.py` on the local sample (fixtures in `tests/conftest.py`). Code must run on Python 3.9
+  with the cluster stack: duckdb 1.4.5, pandas 2.3.3, numpy 2.0.2, pyarrow 21.0.0, matplotlib 3.9.4,
+  statsmodels 0.14.6, folium 0.20.0.
