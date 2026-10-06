@@ -14,3 +14,11 @@ def sample_cfg(tmp_path_factory):
 @pytest.fixture(scope="session")
 def ingested(sample_cfg):
     return ingest.run(sample_cfg)
+
+
+@pytest.fixture(scope="session")
+def cleaned_cfg(sample_cfg, ingested):
+    """sample_cfg after the cleaning stage has written work/clean.parquet (run once per test session)."""
+    from nyc311 import clean
+    clean.run(sample_cfg)
+    return sample_cfg

@@ -174,3 +174,7 @@ def test_any_open_status_counts_as_unresolved(cleaned):
     assert dict(zip(got.s.fillna("NULL"), got.u)) == {
         "Closed": False, "In Progress": True, "Email Sent": True, "Cancelled": False,
         "Closed - Testing": False, "Draft": False, "NULL": False, "Pending": True}
+
+
+def test_shared_cleaned_fixture_has_the_clean_table(cleaned_cfg):
+    assert clean.clean_path(cleaned_cfg).exists()
