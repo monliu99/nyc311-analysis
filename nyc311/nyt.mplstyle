@@ -1,0 +1,84 @@
+# NYT-style charts, modeled on "Average gas prices per gallon and
+# presidential approval ratings". Colors sampled from that graphic.
+#
+#   import matplotlib.pyplot as plt
+#   plt.style.use("path/to/nyt.mplstyle")   # or: import nytplot; nytplot.use()
+#
+# Things rcParams can't express (unit on the top tick only, bold in-panel
+# series labels, left-aligned title/note, shaded bands) live in nytplot.py.
+
+## Fonts: serif for tick labels and notes; nytplot uses sans bold for
+## titles and series labels. First installed family in each list wins.
+font.family:        serif
+font.serif:         Charter, Georgia, Times New Roman, DejaVu Serif
+font.sans-serif:    Libre Franklin, Franklin Gothic Medium, Helvetica Neue, Helvetica, Arial, DejaVu Sans
+font.size:          10.5
+text.color:         111111
+
+## Figure
+figure.figsize:     7, 4.5
+figure.dpi:         150
+figure.facecolor:   white
+figure.constrained_layout.use:    True
+figure.constrained_layout.h_pad:  0.06
+figure.constrained_layout.hspace: 0.06
+figure.titlesize:   14
+figure.titleweight: bold
+figure.labelsize:   10
+
+## Axes: no box, dark zero baseline, faint horizontal gridlines only
+axes.facecolor:     white
+axes.edgecolor:     333333
+axes.linewidth:     1.0
+axes.spines.left:   False
+axes.spines.right:  False
+axes.spines.top:    False
+axes.spines.bottom: True
+axes.grid:          True
+axes.grid.axis:     y
+axes.axisbelow:     line
+axes.xmargin:       0
+axes.ymargin:       0.02
+axes.titlesize:     12
+axes.titleweight:   bold
+axes.titlelocation: left
+axes.labelsize:     10.5
+axes.labelcolor:    999999
+# sage, coral (from the reference), then muted companions for extra series
+axes.prop_cycle:    cycler('color', ['6b817a', 'cf715c', '5b7fa3', 'c49a3a', '8a6d8f', '8c8c8c'])
+
+grid.color:         000000  # translucent, so it reads through fills
+grid.alpha:         0.1
+grid.linewidth:     0.6
+grid.linestyle:     -
+
+## Ticks: gray serif labels, no tick marks
+xtick.major.size:   0
+xtick.minor.size:   0
+xtick.major.pad:    7
+xtick.labelcolor:   999999
+xtick.labelsize:    10.5
+ytick.major.size:   0
+ytick.minor.size:   0
+ytick.major.pad:    6
+ytick.labelcolor:   999999
+ytick.labelsize:    10.5
+ytick.left:         False
+ytick.labelleft:    True
+
+## Marks
+lines.linewidth:    1.5
+lines.solid_capstyle: round
+lines.solid_joinstyle: round
+lines.markersize:   5
+patch.linewidth:    0
+legend.frameon:     False
+legend.fontsize:    10
+legend.labelcolor:  linecolor
+
+## Output: 300-dpi PNG trimmed to content
+savefig.dpi:        300
+savefig.format:     png
+savefig.bbox:       tight
+savefig.pad_inches: 0.12
+savefig.facecolor:  white

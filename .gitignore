@@ -1,0 +1,10 @@
+data/sample/*.json
+work/
+outputs/
+cluster_outputs/*/work/
+*.zip
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+.superpowers/
+.DS_Store
