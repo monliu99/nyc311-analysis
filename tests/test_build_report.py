@@ -80,3 +80,9 @@ def test_missing_stages_say_so_and_brief_questions_appear(built):
     assert "did not produce results" in q01
     assert "top 10 complaint types" in built.lower()
     assert "rows: 10" in built
+
+
+def test_emphasis_can_wrap_inline_code(tmp_path):
+    out = build_report.md_to_html("*Drafted by `q08_dashboard.py`*\n", tmp_path)
+    assert "<em>Drafted by <code>q08_dashboard.py</code></em>" in out
+    assert "*" not in out

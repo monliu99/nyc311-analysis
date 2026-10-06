@@ -114,19 +114,18 @@ def _figure(alt, rel, out_dir, embedded):
 
 
 def _inline(text, out_dir, embedded):
-    parts = _CODE.split(text)
-    out = []
-    for i, part in enumerate(parts):
-        if i % 2:
-            out.append(f"<code>{html.escape(part)}</code>")
-            continue
-        s = html.escape(part)
-        s = _IMG.sub(lambda m: _figure(m.group(1), m.group(2), out_dir, embedded), s)
-        s = _LINK.sub(r'<a href="\2">\1</a>', s)
-        s = _BOLD.sub(r"<strong>\1</strong>", s)
-        s = _ITAL.sub(r"<em>\1</em>", s)
-        out.append(s)
-    return "".join(out)
+    codes = []
+
+    def stash(m):
+        codes.append(f"<code>{html.escape(m.group(1))}</code>")
+        return f"\x00{len(codes) - 1}\x00"
+
+    s = html.escape(_CODE.sub(stash, text))
+    s = _IMG.sub(lambda m: _figure(m.group(1), m.group(2), out_dir, embedded), s)
+    s = _LINK.sub(r'<a href="\2">\1</a>', s)
+    s = _BOLD.sub(r"<strong>\1</strong>", s)
+    s = _ITAL.sub(r"<em>\1</em>", s)
+    return re.sub("\x00(\\d+)\x00", lambda m: codes[int(m.group(1))], s)
 
 
 def _list_html(items, out_dir, embedded):
