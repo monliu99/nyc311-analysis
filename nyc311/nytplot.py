@@ -117,11 +117,16 @@ def highlight(ax, x, y, start, end, color=SAGE, baseline=0):
 class _TopUnitFormatter(mticker.Formatter):
     def __init__(self, prefix, suffix):
         self.prefix, self.suffix = prefix, suffix
+        self._tick_locs = []
+
+    def set_locs(self, locs):
+        # Keep our own copy: Formatter.locs is deprecated in matplotlib 3.11.
+        self._tick_locs = list(locs)
 
     def __call__(self, x, pos=None):
         lo, hi = sorted(self.axis.get_view_interval())
         eps = 1e-9 * (hi - lo)
-        shown = [t for t in self.locs if lo - eps <= t <= hi + eps]
+        shown = [t for t in self._tick_locs if lo - eps <= t <= hi + eps]
         s = f"{x:,.12g}".replace("-", "\N{MINUS SIGN}")
         if x == 0 and lo >= -eps:
             return ""  # zero is the dark baseline, which speaks for itself
