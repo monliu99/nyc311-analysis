@@ -22,6 +22,7 @@ STAGE_MODULES = {
     "q09": "nyc311.q09_equity",
     "q10": "nyc311.q10_features",
     "q11": "nyc311.q11_summary",
+    "report": "nyc311.build_report",
 }
 STAGES = list(STAGE_MODULES)
 
