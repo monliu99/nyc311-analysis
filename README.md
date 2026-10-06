@@ -20,7 +20,7 @@ python run_all.py --data "/path/to/311_batch_*.json" --work /persistent/path/wor
 | 3 clean | Typed, flagged Parquet + shared aggregate tables; rules settled from run #1 | not started |
 | Q1-Q11 | One module per question | not started |
 
-## Cluster run #1 (discovery)
+## Running on the cluster
 
 **The cluster (checked 2026-10-06):** one Jupyter kernel, Python 3.9.24 with pip 21.3.1 (the shared Python isn't
 writable, so packages go to `~/.local` with `--user`); the job has 4 CPUs (`SLURM_CPUS_PER_TASK=4`) and 32 GB
@@ -30,35 +30,35 @@ writable, so packages go to `~/.local` with `--user`); the job has 4 CPUs (`SLUR
 duckdb >= 1.1, pandas >= 2.0 and pyarrow >= 15. The full test suite passes on the cluster's exact stack (duckdb 1.4.5,
 pandas 2.3.3, numpy 2.0.2, pyarrow 21.0.0) and on the current one (Python 3.14, duckdb 1.5, pandas 3.0).
 
-**Check the environment first** (a scratch cell; nothing to install):
+**Steps** (every run)
 
-```python
-import os, sys, glob, shutil, multiprocessing as mp
-files = sorted(glob.glob("/gpfs/project/esai_2026/data/311/311_batch_*.json")); work = os.path.expanduser("~/esai_311_work")
-print(sys.version.split()[0], mp.get_start_method(), "| CPUs:", len(os.sched_getaffinity(0)), "| SLURM CPUs/MB:", os.environ.get("SLURM_CPUS_PER_TASK"), os.environ.get("SLURM_MEM_PER_NODE"))
-print(len(files), "files,", round(sum(map(os.path.getsize, files)) / 1e9, 1), "GB:", files[:1], "..", files[-1:])
-os.makedirs(work, exist_ok=True); print("WORK:", work, shutil.disk_usage(work).free // 10**9, "GB free")
-```
+1. **Build the upload zip** here: `python3 tools/make_upload_zip.py` (standard library only). It writes
+   `../nyc311_lab_upload.zip`, next to this folder (this folder is only read): `nyc311/`, `run_all.py`, `lab.ipynb`,
+   `requirements.txt`, `README.md`, `data/external/`, `report/prose/` and `VERSION.txt` (the commit and the question
+   stages included). It stops if any of that code has uncommitted changes, so commit first; your prose in
+   `report/prose/*.md` goes in as it is now, committed or not.
+2. **Upload** `nyc311_lab_upload.zip` with the JupyterLab file browser's Upload button (the up arrow). Don't
+   double-click the zip; if it opens anyway, the "not UTF-8" error is harmless: close that tab.
+3. **Unzip** it with a Python cell in the same folder (File > New > Notebook):
+   ```python
+   import os, time, zipfile
+   if os.path.exists("nyc311_lab"):  # keep the previous upload and its outputs aside instead of mixing files
+       os.rename("nyc311_lab", time.strftime("nyc311_lab_old_%Y%m%d_%H%M"))
+   zipfile.ZipFile("nyc311_lab_upload.zip").extractall()
+   print(open("nyc311_lab/VERSION.txt").read())
+   ```
+4. **Open `nyc311_lab/lab.ipynb`.** In Settings (cell 3) set
+   `DATA = "/gpfs/project/esai_2026/data/311/311_batch_*.json"` and `WORK = "/gpfs/home/ml3338/esai_311_work"`,
+   and leave `THREADS` and `MEMORY_LIMIT` at `None` (4 threads, DuckDB memory limit 22GB). Reuse that WORK: it
+   already holds the 28.24M-row Parquet copy, so ingest only checks for new files.
+5. **Run > Run All Cells.** Check the `00_env` block: Python 3.9.24, 4 CPUs, 2,824 files (33.3 GB), no WARNING
+   lines. If Settings says a package is not installed or `00_env` shows one as MISSING, cell 2 has just installed
+   it: **Kernel > Restart**, then Run All again.
+6. **Download:** in the file browser, right-click `nyc311_lab/outputs_bundle.zip` > Download, and the same for
+   `nyc311_lab/outputs/report.html`. Unzip the bundle into `cluster_outputs/runN/` here.
 
-Expect `3.9.24 fork | CPUs: 4 | SLURM CPUs/MB: 4 32768`, `2824 files, 33.3 GB`, and at least 20 GB free.
-
-**Steps**
-
-1. Upload this folder without the local data and run state. From the parent folder:
-   `zip -r nyc311_lab.zip nyc311_lab -x 'nyc311_lab/data/sample/*' 'nyc311_lab/work/*' 'nyc311_lab/outputs/*' 'nyc311_lab/cluster_outputs/*' 'nyc311_lab/*.zip' 'nyc311_lab/.git/*' 'nyc311_lab/.superpowers/*' 'nyc311_lab/.pytest_cache/*' '*/__pycache__/*'`.
-   Never upload `work/`: it holds the sample's manifest, and the cluster run would reuse it.
-2. Open `lab.ipynb`. Cell 1 finds the code folder (set `CODE` if Jupyter starts elsewhere). Cell 2 runs
-   `%pip install --user -q -r requirements.txt`; the first time only, run it, then **Kernel > Restart**, then run
-   cell 1 again and skip to cell 3.
-3. In Settings (cell 3) set `DATA = "/gpfs/project/esai_2026/data/311/311_batch_*.json"` and
-   `WORK = "/gpfs/home/<netid>/esai_311_work"`, and leave `THREADS` and `MEMORY_LIMIT` at `None` (the defaults
-   follow the SLURM job: 4 threads, DuckDB memory limit 22GB). The cell prints the package versions and the `00_env`
-   block; check that it shows 2,824 files and no WARNING lines.
-4. Run cell 4 (ingest + discovery), then cell 5, which prints the zip to download (`outputs_bundle.zip`, a few MB).
-   Unzip it into `cluster_outputs/run1/` here.
-
-Without Jupyter (inside the same SLURM job, not on a login node), steps 3-4 are:
-`python3 run_all.py --data "/gpfs/project/esai_2026/data/311/311_batch_*.json" --work /gpfs/home/<netid>/esai_311_work --stages ingest,discover`.
+Without Jupyter (inside the same SLURM job, not on a login node), steps 4-5 are, from `nyc311_lab/`:
+`python3 run_all.py --data "/gpfs/project/esai_2026/data/311/311_batch_*.json" --work /gpfs/home/ml3338/esai_311_work`.
 
 **Time and memory.** Ingest took 171 s for the 2,824 files on the cluster (4 CPUs). Discovery on a 27.6M-row
 synthetic copy took 75 s on a laptop with 4 threads and a peak of 1.7 GB, so plan for 3-5 minutes on the cluster.
