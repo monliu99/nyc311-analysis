@@ -20,6 +20,7 @@ MAP_COLUMNS = ["complaint_type", "canonical_type", "category", "origin", "is_inf
 OUT_COLUMNS = ["complaint_type", "canonical_type", "category", "origin", "is_info_request", "needs_review"]
 ORIGINS = ("city", "private", "natural", "other")
 UNREVIEWED = "Unreviewed"
+INVALID = "Invalid entries"  # map category for rows that are not service requests (test records, web-form probes)
 FUZZY_CUTOFF = 0.85
 
 # Unicode hyphens, en/em dashes and the minus sign all become "-".

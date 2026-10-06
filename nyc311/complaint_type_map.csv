@@ -1,175 +1,479 @@
 complaint_type,canonical_type,category,origin,is_info_request,notes
-HEATING,Housing - Heat,Heat & hot water,private,false,"HPD legacy ALL-CAPS code (descriptors HEAT, HEAT-PLANT), renamed into the Housing - family. Origin: owners must supply heat under the Housing Maintenance Code, so private even though cold weather drives volume."
-GENERAL CONSTRUCTION,Housing - General Construction,Housing conditions,private,false,"HPD ALL-CAPS code for apartment repairs (windows, mold, floors, doors, locks). Not DOB's General Construction/Plumbing (building-code enforcement); no shared descriptor."
-PLUMBING,Housing - Plumbing,Housing conditions,private,false,"HPD ALL-CAPS code: leaks, sinks, radiators, water supply. Kept apart from DOB 'Plumbing' (code enforcement: illegal work, sprinklers, gas piping); no shared descriptor. Listed before DOB 'Plumbing' so new spellings that normalize to 'plumbing' resolve here (the dominant meaning)."
 Noise - Residential,Noise - Residential,Noise,private,false,
-Street Light Condition,Street Light Condition,Streets & sidewalks,city,false,
-Street Condition,Street Condition,Streets & sidewalks,city,false,"Potholes, failed street repairs and cave-ins dominate; about 6% are utility plates or contractor work (private), but the roadway is city infrastructure."
-PAINT - PLASTER,Housing - Paint/Plaster,Housing conditions,private,false,"HPD ALL-CAPS code (walls, ceilings). Later HPD data spells it PAINT/PLASTER, which normalize() also matches."
-Literature Request,Literature Request - DSNY,Information requests,other,true,"DSNY recycling decals, flyers and guides. Renamed to match the HPD and OEM literature requests; the raw name hides which agency it is."
-NONCONST,Housing - Non-Construction,Housing conditions,private,false,"Cryptic HPD code for non-construction violations: vermin (70%), rubbish, smoke/CO detectors, janitor. Vermin in an apartment is the owner's duty to exterminate, so private rather than natural."
-Traffic Signal Condition,Traffic Signal Condition,Streets & sidewalks,city,false,
-Water System,Water System,Water & sewer,city,false,"Leaks, hydrants, low pressure, main breaks: DEP infrastructure. Some running hydrants are opened by people, a minority."
+HEAT/HOT WATER,Housing - Heat/Hot Water,Heat & hot water,private,false,"HPD's name since 2014-03-11 (descriptors ENTIRE BUILDING, APARTMENT ONLY); replaced HEATING (last seen 2014-03-10). One canonical type keeps the heat series continuous."
+Illegal Parking,Illegal Parking,Traffic & parking,private,false,"NYPD's name since 2010-06-03, when Traffic/Illegal Parking split in two; bridged with the old name."
 Blocked Driveway,Blocked Driveway,Traffic & parking,private,false,
-General Construction/Plumbing,General Construction/Plumbing,Buildings & construction,private,false,"DOB building-code enforcement (no permit, sidewalk sheds, unsafe sites, failure to maintain). Distinct from HPD GENERAL CONSTRUCTION."
-ELECTRIC,Housing - Electric,Housing conditions,private,false,"HPD ALL-CAPS code (supply, wiring, lighting, buzzer/intercom). Kept apart from DOB 'Electrical' (code enforcement); no shared descriptor."
-Sewer,Sewer,Water & sewer,city,false,"Sewer backups, catch basins, manholes: DEP infrastructure. Street flooding (about 4%) is weather-related."
-Traffic/Illegal Parking,Traffic/Illegal Parking,Traffic & parking,private,false,
-Dirty Conditions,Dirty Conditions,Sanitation & cleanliness,private,false,"DSNY E-codes: illegal postering, dirty sidewalks, dog waste, improper disposal, illegal dumping."
-Building/Use,Building/Use,Buildings & construction,private,false,"DOB: illegal conversions and occupancy violations."
-DHS Advantage - Tenant,DHS Advantage - Tenant,Social services & education,other,true,"Advantage rent-subsidy program questions (lease expiring or renewal, other issue): program casework, not a condition."
-Sanitation Condition,Sanitation Condition,Sanitation & cleanliness,other,false,"Judgment call: mixed causes. Street dump-out/drop-off (70%), dead animals (28%), weeds. Origin left as other."
-Graffiti,Graffiti,Sanitation & cleanliness,private,false,"Two agencies use this type: DSNY (cleanup) and NYPD (police report)."
-Missed Collection (All Materials),Missed Collection,Sanitation & cleanliness,city,false,"Dropped '(All Materials)': the descriptor already splits refuse, recycling and bulk."
-SCRIE,SCRIE,Social services & education,other,true,"Senior Citizen Rent Increase Exemption: recertification, assistance, application problems. Benefit-program casework (DOF), not a condition."
-Noise,Noise - Construction/Equipment/Animals,Noise,private,false,"Generic-looking name, but it is DEP's own noise type, not a parent of the NYPD Noise - * types: construction (46%), barking dogs (23%), AC/ventilation (15%), alarms. Renamed so it no longer reads as 'all noise'."
-DOF Parking - Payment Issue,DOF Parking - Payment Issue,Taxes & finance,other,false,"Ticket payment processing (no confirmation number, charged twice, late-penalty waiver): an account issue, not a neighborhood condition."
-Noise - Commercial,Noise - Commercial,Noise,private,false,
-Taxi Complaint,Taxi Complaint,Consumer & licensing,private,false,"TLC complaints about drivers and vehicles. One letter away from 'Taxi Compliment'."
-Rodent,Rodent,Health & environment,natural,false,"Judgment call: rat/mouse sightings and signs (66%) counted as natural; 34% are 'Condition Attracting Rodents' (garbage), which could be private. Apartment vermin is under HPD Housing - Non-Construction."
-Consumer Complaint,Consumer Complaint,Consumer & licensing,private,false,
-Derelict Vehicle,Derelict Vehicle,Traffic & parking,private,false,"Merged with 'Derelict Vehicles': same condition (an abandoned car), routed by whether it has plates (NYPD with plates, DSNY without). The agency column keeps the routing."
-APPLIANCE,Housing - Appliance,Housing conditions,private,false,"HPD ALL-CAPS code (stove/range, refrigerator)."
-DOF Property - Owner Issue,DOF Property - Owner Issue,Taxes & finance,other,false,"Billing name/address corrections: administrative."
-Broken Muni Meter,Broken Muni Meter,Traffic & parking,city,false,"Kept apart from Broken Parking Meter: different hardware (pay-and-display vs single-space meter), although the descriptors overlap."
-Sidewalk Condition,Sidewalk Condition,Streets & sidewalks,private,false,"Judgment call: NYC property owners must repair the sidewalk in front of their building; descriptors are broken sidewalks, owner violations and construction blockages. Could be read as city (DOT inspects)."
-Damaged Tree,Damaged Tree,Trees & parks,natural,false,"Fallen or cracked branches and trees, mostly wind/storm/ice."
-Derelict Vehicles,Derelict Vehicle,Traffic & parking,private,false,"Merged into 'Derelict Vehicle' (plural spelling, DSNY's cars without plates)."
-DHS Advantage -Landlord/Broker,DHS Advantage - Landlord/Broker,Social services & education,other,true,"Spacing fixed. Judgment call: 54% are 'Payment Not Received from DHS', which could be read as a city service failure; treated as program casework like the tenant type."
-DOF Property - Request Copy,DOF Property - Request Copy,Information requests,other,true,"Copies of statements and account information."
-HPD Literature Request,Literature Request - HPD,Information requests,other,true,"Tenant/landlord brochures, Mitchell-Lama list. Renamed to the Literature Request - <agency> pattern."
-Street Sign - Damaged,Street Sign - Damaged,Streets & sidewalks,city,false,
-Elevator,Elevator,Buildings & construction,private,false,"DOB: defective or uninspected elevators, the owner's responsibility."
-DOF Property - Reduction Issue,DOF Property - Reduction Issue,Taxes & finance,other,false,"Exemption/abatement problems (STAR, SCHE, veteran): administrative."
-Snow,Snow,Streets & sidewalks,natural,false,"Weather-driven. Re-plow requests (city) and icy sidewalks (owners) are minorities."
-Noise - Vehicle,Noise - Vehicle,Noise,private,false,
-DCA / DOH New License Application Request,DCA/DOH New License Application Request,Consumer & licensing,other,true,"Spacing fixed. License applications (street and food vendors, contractors): a service request. DCA is now DCWP."
-Indoor Air Quality,Indoor Air Quality,Health & environment,private,false,"DOHMH indoor air (vapors, ventilation). Kept apart from DEP's outdoor 'Air Quality'."
-DOF Property - Payment Issue,DOF Property - Payment Issue,Taxes & finance,other,false,"Property-tax billing and refunds: administrative."
-Air Quality,Air Quality,Health & environment,private,false,"DEP outdoor air: idling vehicles, smoke, restaurant odors, dust."
-Food Establishment,Food Establishment,Health & environment,private,false,
-Broken Parking Meter,Broken Parking Meter,Traffic & parking,city,false,"Kept apart from Broken Muni Meter (different hardware)."
-Water Conservation,Water Conservation,Water & sewer,private,false,"Judgment call: broken/leaking water meters at private premises (82%) and wasted water; owners maintain service lines and fixtures. Could be city if meters count as DEP equipment."
+Street Condition,Street Condition,Streets & sidewalks,city,false,"Potholes, failed street repairs and cave-ins dominate; about 6% are utility plates or contractor work (private), but the roadway is city infrastructure."
+Street Light Condition,Street Light Condition,Streets & sidewalks,city,false,
+Request Large Bulky Item Collection,Bulky Item Collection Request,Sanitation & cleanliness,other,true,Appointment request for bulk pickup (since 2017-08-29): a service request. Not the '2 Bulk-Missed Collection' complaint.
+HEATING,Housing - Heat/Hot Water,Heat & hot water,private,false,"HPD legacy ALL-CAPS code (descriptors HEAT, HEAT-PLANT), last seen 2014-03-10; HPD renamed it HEAT/HOT WATER on 2014-03-11, so both map to one type and the heat series is continuous. Origin: owners must supply heat under the Housing Maintenance Code, so private even though cold weather drives volume."
 Noise - Street/Sidewalk,Noise - Street/Sidewalk,Noise,private,false,
-Street Sign - Missing,Street Sign - Missing,Streets & sidewalks,city,false,
-Root/Sewer/Sidewalk Condition,Root/Sewer/Sidewalk Condition,Trees & parks,natural,false,"Judgment call: street-tree roots lifting sidewalks or reaching sewers. Natural growth, though the trees are city-owned (could be city)."
-Non-Residential Heat,Non-Residential Heat,Heat & hot water,private,false,"DOHMH: inadequate heat in workplaces and commercial space; the owner's duty."
-Housing Options,Housing Options,Information requests,other,true,"DFTA information for seniors on assisted living and nursing homes."
-Electrical,Electrical,Buildings & construction,private,false,"DOB code enforcement (defective/exposed wiring). Kept apart from HPD ELECTRIC."
+PLUMBING,Housing - Plumbing,Housing conditions,private,false,"HPD ALL-CAPS code: leaks, sinks, radiators, water supply. Kept apart from DOB 'Plumbing' (code enforcement: illegal work, sprinklers, gas piping); no shared descriptor. Listed before DOB 'Plumbing' so new spellings that normalize to 'plumbing' resolve here (the dominant meaning). Its WATER-LEAKS descriptor became the separate WATER LEAK type on 2014-03-11."
+Water System,Water System,Water & sewer,city,false,"Leaks, hydrants, low pressure, main breaks: DEP infrastructure. Some running hydrants are opened by people, a minority."
+UNSANITARY CONDITION,Housing - Unsanitary Condition,Housing conditions,private,false,"HPD 2014 code: pests, mold, garbage storage, sewage. Takes over NONCONST's vermin and rubbish (bridged) and GENERAL CONSTRUCTION's mold."
+General Construction/Plumbing,General Construction/Plumbing,Buildings & construction,private,false,"DOB building-code enforcement (no permit, sidewalk sheds, unsafe sites, failure to maintain). Distinct from HPD GENERAL CONSTRUCTION."
+Noise,Noise - Construction/Equipment/Animals,Noise,private,false,"Generic-looking name, but it is DEP's own noise type, not a parent of the NYPD Noise - * types: mostly construction (before/after hours, equipment, jackhammering), then barking dogs, AC/ventilation, alarms. Renamed so it no longer reads as 'all noise'."
+GENERAL CONSTRUCTION,Housing - General Construction,Housing conditions,private,false,"HPD ALL-CAPS code for apartment repairs (mold, floors, windows, doors, cabinets, locks). Not DOB's General Construction/Plumbing (building-code enforcement); no shared descriptor. Retired 2014-03-06 and split by descriptor: MOLD to UNSANITARY CONDITION, FLOOR/STAIRS to FLOORING/STAIRS, DOORS/WINDOWS/LOCKS to DOOR/WINDOW, CABINETS/GAS/MAIL-BOX/VENTILATION to GENERAL, WINDOW GUARDS/FIRE-ESCAPE to SAFETY. No successor takes most of its rows, so it stays a legacy type; the series is continuous at category level."
+Traffic Signal Condition,Traffic Signal Condition,Streets & sidewalks,city,false,
+Noise - Commercial,Noise - Commercial,Noise,private,false,
+PAINT/PLASTER,Housing - Paint/Plaster,Housing conditions,private,false,HPD's spelling of PAINT - PLASTER; the only one used after 2014-03-04.
+Sewer,Sewer,Water & sewer,city,false,"Sewer backups, catch basins, manholes: DEP infrastructure. Street flooding (about 4%) is weather-related."
+Dirty Conditions,Dirty Conditions,Sanitation & cleanliness,private,false,"DSNY E-codes: dirty sidewalks and areas, illegal postering, improper disposal, dumping surveillance, dog waste. Last seen 2021-09-21: DSNY's re-coding moved dirty sidewalks and dog waste to 'Dirty Condition' (merged here), postering to Illegal Posting and dumping to Illegal Dumping."
+Damaged Tree,Damaged Tree,Trees & parks,natural,false,"Fallen or cracked branches and trees, mostly wind/storm/ice."
+Sanitation Condition,Sanitation Condition,Sanitation & cleanliness,other,false,"Judgment call: mixed causes. Street dump-out/drop-off (about two thirds), dead animals (about a quarter), weeds. Origin left as other. Retired 2021-09-21 and split (dump-outs to Illegal Dumping, dead animals to Dead Animal, weeds to Obstruction); no successor takes four fifths of its rows, so it stays a legacy type."
+Noise - Vehicle,Noise - Vehicle,Noise,private,false,
+PAINT - PLASTER,Housing - Paint/Plaster,Housing conditions,private,false,"HPD ALL-CAPS code (walls, ceilings), last seen 2014-03-04; its rows continue as PAINT/PLASTER (same descriptors, singular), which normalize() also matches."
+Missed Collection (All Materials),Missed Collection,Sanitation & cleanliness,city,false,"Dropped '(All Materials)': the descriptor already splits refuse, recycling and bulk. Renamed 'Missed Collection' in DSNY's 2021-09-21 re-coding."
+ELECTRIC,Housing - Electric,Housing conditions,private,false,"HPD ALL-CAPS code (supply, wiring, lighting, outlets). Kept apart from DOB 'Electrical' (code enforcement); no shared descriptor. Its BELL-BUZZER/INTERCOM descriptor moved to GENERAL on 2014-03-11."
+Rodent,Rodent,Health & environment,natural,false,"Judgment call: rat/mouse sightings and signs (about three quarters) counted as natural; 'Condition Attracting Rodents' (garbage, about a quarter) could be private. Apartment vermin is under HPD Housing - Unsanitary Condition."
+Literature Request,Literature Request - DSNY,Information requests,other,true,"DSNY recycling decals, flyers and guides. Renamed to match the HPD and OEM literature requests; the raw name hides which agency it is."
+Building/Use,Building/Use,Buildings & construction,private,false,DOB: illegal conversions and occupancy violations.
+Sidewalk Condition,Sidewalk Condition,Streets & sidewalks,private,false,"Judgment call: NYC property owners must repair the sidewalk in front of their building; descriptors are broken sidewalks, owner violations and construction blockages. Could be read as city (DOT inspects)."
+Derelict Vehicles,Derelict Vehicle,Traffic & parking,private,false,"Merged into 'Derelict Vehicle' (plural spelling, DSNY's cars without plates)."
+NONCONST,Housing - Unsanitary Condition,Housing conditions,private,false,"Cryptic HPD code for non-construction violations, last seen 2014-03-10. From 2014-03-11 its VERMIN and RUBBISH rows (most of the type) continue as UNSANITARY CONDITION (PESTS, GARBAGE/RECYCLING STORAGE), so it is bridged there; its smoke/CO-detector rows moved to SAFETY and JANITOR-SUPER/SIGNAGE to GENERAL. Was 'Housing - Non-Construction' before the full data showed the rename. Apartment vermin is the owner's duty, so private."
+DOOR/WINDOW,Housing - Door/Window,Housing conditions,private,false,"HPD 2014 code (doors, window frames and panes); takes over GENERAL CONSTRUCTION's DOORS, WINDOWS and LOCKS."
+WATER LEAK,Housing - Water Leak,Housing conditions,private,false,"HPD 2014 code (heavy flow, slow leak, damp spot); was PLUMBING's WATER-LEAKS descriptor before 2014-03-11. Kept apart from DOT's one-row 'Water Leak'."
+Consumer Complaint,Consumer Complaint,Consumer & licensing,private,false,
+Derelict Vehicle,Derelict Vehicle,Traffic & parking,private,false,"Merged with 'Derelict Vehicles': same condition (an abandoned car), routed by whether it has plates (NYPD with plates, DSNY without). The agency column keeps the routing. NYPD switched to 'Abandoned Vehicle' (same descriptor 'With License Plate') in 2018-06; this spelling was last seen 2019-06-21."
+GENERAL,Housing - General,Housing conditions,private,false,"HPD code. Before 2014-03 also a short form of GENERAL CONSTRUCTION (same descriptors: mold, floor, windows); since 2014-03-11 a narrower code (cooking gas, cabinets, buzzer/intercom, ventilation, janitor, mailbox)."
+Graffiti,Graffiti,Sanitation & cleanliness,private,false,Two agencies use this type: DSNY (cleanup) and NYPD (police report).
+New Tree Request,New Tree Request,Trees & parks,other,true,Request to plant a street tree: a service request.
 Overgrown Tree/Branches,Overgrown Tree/Branches,Trees & parks,natural,false,"Branches growing into buildings, wires, streets. Natural; a pruning backlog could make it city."
-Other Enforcement,Other Sanitation Enforcement,Sanitation & cleanliness,private,false,"Generic name; descriptors are DSNY sanitation-code violations (sidewalk obstruction, receptacle storage, commercial waste)."
-New Tree Request,New Tree Request,Trees & parks,other,true,"Request to plant a street tree: a service request."
-Plumbing,Plumbing,Buildings & construction,private,false,"DOB code enforcement: drainage, illegal plumbing work, gas piping, sprinklers. Kept apart from HPD PLUMBING (apartment repairs); no shared descriptor."
-Special Projects Inspection Team (SPIT),Special Projects Inspection Team (SPIT),Buildings & construction,private,false,"A DOB unit name, not a condition: illegal signs and awnings, illegal hotel rooms, accessibility."
-Boilers,Boilers,Buildings & construction,private,false,
-Food Poisoning,Food Poisoning,Health & environment,private,false,
-Dead Tree,Dead Tree,Trees & parks,natural,false,
-DOF Parking - Request Copy,DOF Parking - Request Copy,Information requests,other,true,"Ticket images, decisions, lists of tickets."
+Taxi Complaint,Taxi Complaint,Consumer & licensing,private,false,TLC complaints about drivers and vehicles. One letter away from 'Taxi Compliment'. TLC also files 'Taxi Report' (descriptors 'Driver Report') since 2014-10; kept apart as TLC does.
+Homeless Person Assistance,Homeless Person Assistance,Social services & education,other,true,"Judgment call: a request for DHS outreach to a person, read as a service request rather than a complaint."
+Broken Muni Meter,Broken Muni Meter,Traffic & parking,city,false,"Kept apart from Broken Parking Meter: different hardware (pay-and-display vs single-space meter), although the descriptors overlap."
+FLOORING/STAIRS,Housing - Flooring/Stairs,Housing conditions,private,false,HPD 2014 code; takes over GENERAL CONSTRUCTION's FLOOR and STAIRS.
+Non-Emergency Police Matter,Non-Emergency Police Matter,Public safety & conduct,private,false,Trespassing and other police matters; in 2020 also COVID-19 social-distancing and face-covering complaints (descriptors).
 Maintenance or Facility,Maintenance or Facility,Trees & parks,city,false,"DPR park structures, litter, graffiti: park maintenance."
-Smoking,Smoking,Health & environment,private,false,
-Highway Condition,Highway Condition,Streets & sidewalks,city,false,
-Street Sign - Dangling,Street Sign - Dangling,Streets & sidewalks,city,false,
-Non-Emergency Police Matter,Non-Emergency Police Matter,Public safety & conduct,private,false,"Trespassing and other police matters."
-Emergency Response Team (ERT),Emergency Response Team (ERT),Buildings & construction,private,false,"A DOB unit name: illegal after-hours work."
+APPLIANCE,Housing - Appliance,Housing conditions,private,false,"HPD ALL-CAPS code (stove/range, refrigerator)."
+Elevator,Elevator,Buildings & construction,private,false,"DOB: defective or uninspected elevators, the owner's responsibility. Kept apart from HPD ELEVATOR (descriptor MAINTENANCE only); no shared descriptor."
+Benefit Card Replacement,Benefit Card Replacement,Social services & education,other,true,HRA Medicaid/SNAP/cash card replacement.
+DOF Property - Reduction Issue,DOF Property - Reduction Issue,Taxes & finance,other,false,"Exemption/abatement problems (STAR, SCHE, veteran): administrative."
+Root/Sewer/Sidewalk Condition,Root/Sewer/Sidewalk Condition,Trees & parks,natural,false,"Judgment call: street-tree roots lifting sidewalks or reaching sewers. Natural growth, though the trees are city-owned (could be city)."
+Food Establishment,Food Establishment,Health & environment,private,false,
+Abandoned Vehicle,Derelict Vehicle,Traffic & parking,private,false,NYPD's name since 2018-06-15 for 'Derelict Vehicle' (last seen 2019-06-21); same descriptor 'With License Plate'.
+Snow,Snow,Streets & sidewalks,natural,false,"DSNY: icy sidewalks (the largest group), re-plow requests, icy streets. Judgment call: weather-driven, so natural, although sidewalk clearing is the owner's duty and plowing the city's. Continued as Snow Removal (2019-12 to 2021-02) and Snow or Ice (from 2021-10), both bridged here."
+Air Quality,Air Quality,Health & environment,private,false,"DEP outdoor air: idling vehicles, smoke, restaurant odors, dust."
+SCRIE,SCRIE,Social services & education,other,true,"Senior Citizen Rent Increase Exemption: recertification, assistance, application problems. Benefit-program casework (DOF), not a condition."
+Street Sign - Damaged,Street Sign - Damaged,Streets & sidewalks,city,false,
 For Hire Vehicle Complaint,For Hire Vehicle Complaint,Consumer & licensing,private,false,
-Vending,Vending,Consumer & licensing,private,false,"NYPD: unlicensed vendors or vending in prohibited areas."
-Litter Basket / Request,Litter Basket Request,Sanitation & cleanliness,other,true,"Spacing fixed. Judgment call: read as a request for a litter basket (service request), not a complaint."
-Lead,Lead Test Kit Request,Water & sewer,other,true,"Vague name; every descriptor is a lead-in-water test kit request (a service request)."
-Animal in a Park,Animal in a Park,Trees & parks,natural,false,"Judgment call: mostly wildlife (injured, sightings, removal, dead); off-leash dogs and strays (31%) are people-caused."
-Hazardous Materials,Hazardous Materials,Health & environment,private,false,
-Unsanitary Animal Pvt Property,Unsanitary Animal - Private Property,Health & environment,private,false,"Abbreviation expanded. Animal waste/odor from animals kept on private property."
-School Maintenance,School Maintenance,Social services & education,city,false,
-Asbestos,Asbestos,Health & environment,private,false,"Two agencies use this type (DEP, DOHMH); building owners and contractors."
-Industrial Waste,Industrial Waste,Water & sewer,private,false,"Businesses discharging grease, oil, chemicals into sewers and catch basins."
-Vacant Lot,Vacant Lot,Sanitation & cleanliness,private,false,"Request to clean a vacant lot: the lot owner's duty."
-Investigations and Discipline (IAD),Investigations and Discipline (IAD),Buildings & construction,private,false,"A DOB unit name: unlicensed electrical/plumbing work."
-Bus Stop Shelter Complaint,Bus Stop Shelter Complaint,Streets & sidewalks,city,false,"Broken glass, lighting, dirt at bus shelters (city-franchised street furniture)."
-DOF Parking - Request Status,DOF Parking - Request Status,Information requests,other,true,"Status of hearings and appeals."
-OEM Literature Request,Literature Request - OEM,Information requests,other,true,"Ready NY emergency-preparedness guides. Renamed to the Literature Request - <agency> pattern; OEM is now NYCEM."
-DOF Property - City Rebate,DOF Property - City Rebate,Information requests,other,true,"Mostly status questions about the property-tax rebate check."
-Home Repair,Home Repair,Social services & education,other,true,"DFTA home-repair help for seniors: a service request."
-Public Payphone Complaint,Public Payphone Complaint,Consumer & licensing,private,false,"Privately operated payphones franchised by DoITT: damaged phones, lost coins."
-Elder Abuse,Elder Abuse,Social services & education,private,false,"A report of abuse by a person: a complaint, not a request."
-Illegal Tree Damage,Illegal Tree Damage,Trees & parks,private,false,
-Recycling Enforcement,Recycling Enforcement,Sanitation & cleanliness,private,false,
-Curb Condition,Curb Condition,Streets & sidewalks,city,false,"Judgment call: broken curbs counted as street infrastructure (city), unlike sidewalks (owners)."
-HEAP Assistance,HEAP Assistance,Social services & education,other,true,"Home Energy Assistance Program help: a benefit request."
-DHS Advantage - Third Party,DHS Advantage - Third Party,Social services & education,other,true,"Advantage rent-subsidy program casework."
-Unleashed Dog,Unleashed Dog,Health & environment,private,false,
-BEST/Site Safety,BEST/Site Safety,Buildings & construction,private,false,
-Overflowing Litter Baskets,Overflowing Litter Baskets,Sanitation & cleanliness,city,false,"How often baskets are emptied is a DSNY service."
-Window Guard,Window Guard,Housing conditions,private,false,"DOHMH: missing window guards in apartments, the owner's legal duty."
-Weatherization,Weatherization,Social services & education,other,true,"DFTA weatherization assistance: a program request."
-Homeless Encampment,Homeless Encampment,Public safety & conduct,private,false,"Judgment call: counted as actions of people in the neighborhood (NYPD). Could be framed as a city social-services gap."
-DOF Parking - Address Update,DOF Parking - Address Update,Taxes & finance,other,true,"Records update: a transaction, not a complaint."
-CONSTRUCTION,Housing - Construction,Housing conditions,private,false,"HPD ALL-CAPS code: roof, elevator, pavement, rain leader. Kept apart from HPD GENERAL CONSTRUCTION (no shared descriptor)."
-Sweeping/Missed-Inadequate,Sweeping - Missed/Inadequate,Sanitation & cleanliness,city,false,"Punctuation standardized. Missed or inadequate street sweeping."
-Drinking,Drinking,Public safety & conduct,private,false,"Alcohol (underage, after hours, in public). Unrelated to DOHMH 'Drinking Water' despite the shared word."
-DOF Parking - DMV Clearance,DOF Parking - DMV Clearance,Taxes & finance,other,true,"Registration clearance request: a transaction, not a complaint."
-Safety,School Safety,Social services & education,private,false,"Vague name; DOE descriptors are school safety, harassment, altercations (student behavior, so private)."
-Water Quality,Water Quality,Water & sewer,city,false,"Taste, odor, cloudy tap water: DEP supply (building plumbing could be private)."
-Eviction,Senior Eviction Assistance,Social services & education,other,true,"Vague name; DFTA descriptors are mobile/homebound seniors asking for eviction help."
-Noise - House of Worship,Noise - House of Worship,Noise,private,false,
-Utility Program,Utility Program,Social services & education,other,true,"DFTA utility assistance program."
-Taxi Compliment,Taxi Compliment,Consumer & licensing,other,true,"A compliment, not a complaint; one letter away from 'Taxi Complaint'."
-Disorderly Youth,Disorderly Youth,Public safety & conduct,private,false,
-Unsanitary Pigeon Condition,Unsanitary Pigeon Condition,Health & environment,natural,false,"Pigeon waste and odor: animals (people feeding them may contribute)."
-Found Property,Found Property,Information requests,other,true,"TLC lost-and-found reports for taxis."
-Bridge Condition,Bridge Condition,Streets & sidewalks,city,false,
-Discipline and Suspension,Discipline and Suspension,Social services & education,city,false,"DOE suspension process and student rights: the school system's actions."
-Posting Advertisement,Posting Advertisement,Public safety & conduct,private,false,
-Ferry Inquiry,Ferry Inquiry,Information requests,other,true,"Staten Island Ferry lost and found and general inquiries."
-Alzheimer's Care,Alzheimer's Care,Social services & education,other,true,
-Teaching/Learning/Instruction,Teaching/Learning/Instruction,Social services & education,city,false,
-Parking Card,Parking Card,Traffic & parking,city,false,"Parking card not dispensed by a DOT vending machine."
-City Vehicle Placard Complaint,City Vehicle Placard Complaint,Traffic & parking,city,false,"Misuse of city-issued parking placards by city employees: the city's own actions."
-Violation of Park Rules,Violation of Park Rules,Trees & parks,private,false,
-Senior Center Complaint,Senior Center Complaint,Social services & education,city,false,"City-funded senior centers (DFTA)."
-Cranes and Derricks,Cranes and Derricks,Buildings & construction,private,false,
-DOF Property - Property Value,DOF Property - Property Value,Taxes & finance,other,false,"Assessment dispute: administrative."
-Miscellaneous Categories,FDNY Referral (DOB),Buildings & construction,other,false,"Generic name; every row is 'FDNY Referral - Pilot' sent to DOB. The condition is unknown, so origin other."
-Bus Stop Shelter Placement,Bus Stop Shelter Placement,Streets & sidewalks,other,true,"Request for a new or relocated shelter."
-Noise - Park,Noise - Park,Noise,private,false,
-Scaffold Safety,Scaffold Safety,Buildings & construction,private,false,
-Health,School Health,Social services & education,city,false,"Vague name; DOE descriptors are unhealthy conditions in schools."
-Ferry Complaint,Ferry Complaint,Other,city,false,"Staten Island Ferry service (DOT)."
-DOF Property - RPIE Issue,DOF Property - RPIE Issue,Taxes & finance,other,false,"Income and expense filing issues: administrative."
-Home Delivered Meal - Missed Delivery,Home Delivered Meal - Missed Delivery,Social services & education,city,false,"City-funded meals (DFTA contractors). Kept apart from the generic Home Delivered Meal Complaint."
-Plant,Wastewater Treatment Plant,Water & sewer,city,false,"Vague name; DEP codes PO1/PN1 are odor/noise from DEP plants, read as wastewater treatment plants (judgment call on the name)."
-Illegal Animal Kept as Pet,Illegal Animal Kept as Pet,Health & environment,private,false,
-Urinating in Public,Urinating in Public,Public safety & conduct,private,false,
-Home Delivered Meal Complaint,Home Delivered Meal Complaint,Social services & education,city,false,"City-funded meals (DFTA contractors)."
-Bike/Roller/Skate Chronic,Bike/Roller/Skate Chronic,Public safety & conduct,private,false,
-Collection Truck Noise,Noise - Collection Truck,Noise,city,false,"Renamed into the Noise - family. DSNY's own collection trucks, so city (private carting noise is under DEP noise)."
-Tattooing,Tattooing,Health & environment,private,false,
-Registration and Transfers,Registration and Transfers,Social services & education,other,true,"School registration and transfer requests."
-Stalled Sites,Stalled Sites,Buildings & construction,private,false,
-Mold,Mold,Health & environment,private,false,"DOHMH mold at commercial or workplace locations; apartment mold is under HPD Housing - General Construction."
-Animal Facility - No Permit,Animal Facility - No Permit,Health & environment,private,false,
-Highway Sign - Damaged,Highway Sign - Damaged,Streets & sidewalks,city,false,
-Parent Leadership,Parent Leadership,Social services & education,city,false,
-Panhandling,Panhandling,Public safety & conduct,private,false,
-Highway Sign - Missing,Highway Sign - Missing,Streets & sidewalks,city,false,
-Highway Sign - Dangling,Highway Sign - Dangling,Streets & sidewalks,city,false,
-Transportation Provider Complaint,Transportation Provider Complaint,Social services & education,city,false,"DFTA-contracted senior transportation."
-Calorie Labeling,Calorie Labeling,Health & environment,private,false,
-Home Care Provider Complaint,Home Care Provider Complaint,Social services & education,city,false,"DFTA-contracted home care."
-Municipal Parking Facility,Municipal Parking Facility,Traffic & parking,city,false,
-Drinking Water,Drinking Water,Health & environment,other,false,"Illness blamed on drinking water; source (city supply or building) unknown, so other."
-Unsanitary Animal Facility,Unsanitary Animal Facility,Health & environment,private,false,
-Ferry Permit,Ferry Permit,Consumer & licensing,other,true,"Permit to perform on the ferry: a request."
+Other Enforcement,Other Sanitation Enforcement,Sanitation & cleanliness,private,false,"Generic name; descriptors are DSNY sanitation-code violations (receptacle storage, street/sidewalk obstruction, commercial waste). Retired 2021-09-21: obstructions continue under Obstruction, storage and commercial waste under the Disposal Complaint types."
+Lead,Lead Test Kit Request,Water & sewer,other,true,"Vague name; every descriptor is a lead-in-water test kit request (a service request). Kept apart from DOHMH 'LEAD' (one row, no descriptor)."
 Illegal Fireworks,Illegal Fireworks,Public safety & conduct,private,false,
-Bereavement Support Group,Bereavement Support Group,Social services & education,other,true,
-Case Management Agency Complaint,Case Management Agency Complaint,Social services & education,city,false,"DFTA-contracted case management."
-Beach/Pool/Sauna Complaint,Beach/Pool/Sauna Complaint,Health & environment,private,false,
-Legal Services Provider Complaint,Legal Services Provider Complaint,Social services & education,city,false,"DFTA-contracted legal services."
-Illegal Animal Sold,Illegal Animal Sold,Health & environment,private,false,
-No Child Left Behind,No Child Left Behind,Social services & education,other,true,"School choice/transfer requests."
-Special Natural Area District (SNAD),Special Natural Area District (SNAD),Buildings & construction,private,false,"Illegal tree removal or grading in a special natural area (DOB)."
-Poison Ivy,Poison Ivy,Health & environment,natural,false,
-Bottled Water,Bottled Water,Health & environment,private,false,
-Squeegee,Squeegee,Public safety & conduct,private,false,
-Portable Toilet,Portable Toilet,Health & environment,private,false,
-Radioactive Material,Radioactive Material,Health & environment,private,false,
-Tunnel Condition,Tunnel Condition,Streets & sidewalks,city,false,
+DOF Parking - Payment Issue,DOF Parking - Payment Issue,Taxes & finance,other,false,"Ticket payment processing (no confirmation number, charged twice, late-penalty waiver): an account issue, not a neighborhood condition."
+Electronics Waste Appointment,Electronics Waste Collection Request,Sanitation & cleanliness,other,true,E-waste pickup appointment (since 2017-04): a service request.
+NonCompliance with Phased Reopening,COVID-19 Reopening Non-Compliance,Health & environment,private,false,OSE/NYPD 2020-06 to 2021-07: businesses not following COVID-19 reopening rules.
+SAFETY,Housing - Safety,Housing conditions,private,false,"HPD 2014 code: smoke and CO detectors, window guards, fire escapes, sprinklers (from NONCONST and GENERAL CONSTRUCTION). Kept apart from DOE 'Safety' (school safety); no shared descriptor."
+DOF Property - Owner Issue,DOF Property - Owner Issue,Taxes & finance,other,false,Billing name/address corrections: administrative.
+Broken Parking Meter,Broken Parking Meter,Traffic & parking,city,false,Kept apart from Broken Muni Meter (different hardware).
+DOF Property - Request Copy,DOF Property - Request Copy,Information requests,other,true,Copies of statements and account information.
+Dead/Dying Tree,Dead/Dying Tree,Trees & parks,natural,false,DPR's name since 2016-02-12 for 'Dead Tree'.
+Street Sign - Missing,Street Sign - Missing,Streets & sidewalks,city,false,
+Dead Tree,Dead/Dying Tree,Trees & parks,natural,false,"DPR's name until 2016-02-11 (its only descriptor is 'Dead/Dying Tree'); renamed Dead/Dying Tree on 2016-02-12, so both map to one type."
+Plumbing,Plumbing,Buildings & construction,private,false,"DOB code enforcement: drainage, illegal plumbing work, gas piping, sprinklers. Kept apart from HPD PLUMBING (apartment repairs); no shared descriptor."
+Curb Condition,Curb Condition,Streets & sidewalks,city,false,"Judgment call: broken curbs counted as street infrastructure (city), unlike sidewalks (owners)."
+Indoor Air Quality,Indoor Air Quality,Health & environment,private,false,"DOHMH indoor air (vapors, ventilation). Kept apart from DEP's outdoor 'Air Quality'."
+DOF Property - Payment Issue,DOF Property - Payment Issue,Taxes & finance,other,false,Property-tax billing and refunds: administrative.
+HPD Literature Request,Literature Request - HPD,Information requests,other,true,"Tenant/landlord brochures, Mitchell-Lama list. Renamed to the Literature Request - <agency> pattern."
+Animal Abuse,Animal Abuse,Public safety & conduct,private,false,"NYPD: neglect, torture, no shelter, chained."
+Housing - Low Income Senior,Low Income Senior Housing,Information requests,other,true,DFTA information for seniors. Renamed: the raw name reads like the HPD 'Housing - ...' family but is not HPD.
+Noise - Park,Noise - Park,Noise,private,false,
+Traffic,Traffic,Traffic & parking,private,false,"NYPD since 2010-06-03: congestion, truck routes, drag racing, speeding (split from Traffic/Illegal Parking)."
+Highway Condition,Highway Condition,Streets & sidewalks,city,false,"Also absorbs DOT's 'DEP Highway Condition' (since 2019-07): same condition, the prefix only names the utility that caused it."
+Emergency Response Team (ERT),Emergency Response Team (ERT),Buildings & construction,private,false,A DOB unit name: illegal after-hours work.
+Vending,Vending,Consumer & licensing,private,false,NYPD: unlicensed vendors or vending in prohibited areas.
+Water Conservation,Water Conservation,Water & sewer,private,false,"Judgment call: broken/leaking water meters at private premises (the largest group), illegal hydrant use and wasted water; owners maintain service lines and fixtures, and people open hydrants. Could be city if meters count as DEP equipment."
+Special Projects Inspection Team (SPIT),Special Projects Inspection Team (SPIT),Buildings & construction,private,false,"A DOB unit name, not a condition: illegal signs and awnings, illegal hotel rooms, accessibility."
+Noise - Helicopter,Noise - Helicopter,Noise,private,false,EDC: helicopter noise (mostly operators).
+DHS Advantage - Tenant,DHS Advantage - Tenant,Social services & education,other,true,"Advantage rent-subsidy program questions (lease expiring or renewal, other issue): program casework, not a condition."
+Electrical,Electrical,Buildings & construction,private,false,DOB code enforcement (defective/exposed wiring). Kept apart from HPD ELECTRIC.
+Homeless Encampment,Homeless Encampment,Public safety & conduct,private,false,"Judgment call: counted as actions of people in the neighborhood (NYPD). Could be framed as a city social-services gap. Last seen 2020-04-29; continued as 'Encampment' (NYPD, then also DHS) from 2020-01-09, bridged here."
+Food Poisoning,Food Poisoning,Health & environment,private,false,
+Illegal Tree Damage,Illegal Tree Damage,Trees & parks,private,false,
+Litter Basket / Request,Litter Basket Request,Sanitation & cleanliness,other,true,"Spacing fixed. Judgment call: read as a request for a litter basket (service request), not a complaint. Renamed 'Litter Basket Request' on 2021-09-21."
+Hazardous Materials,Hazardous Materials,Health & environment,private,false,"DEP chemical odors, spills, unsafe storage. Also absorbs the singular 'Hazardous Material' (four 2010 rows, same kind of descriptors)."
+Construction Safety Enforcement,Construction Safety Enforcement,Buildings & construction,private,false,"DOB tracking complaints (excavation, site safety, sweeps), mostly generated by DOB."
+Street Sign - Dangling,Street Sign - Dangling,Streets & sidewalks,city,false,
+DHS Advantage -Landlord/Broker,DHS Advantage - Landlord/Broker,Social services & education,other,true,"Spacing fixed. Judgment call: most rows are 'Payment Not Received from DHS', which could be read as a city service failure; treated as program casework like the tenant type."
+Violation of Park Rules,Violation of Park Rules,Trees & parks,private,false,
+Construction,DOB Construction Inspection Request,Buildings & construction,other,true,"DOB inspection appointments (Initial - Construction, Initial - CO, re-inspections): a service request by the applicant. Kept apart from HPD CONSTRUCTION (roof, pavement); no shared descriptor."
+Electronics Waste,Electronics Waste Collection Request,Sanitation & cleanliness,other,true,"Earlier e-waste pickup type (2016-10 to 2020-02, mostly 'Recycling Electronics'); handed over to Electronics Waste Appointment."
+DCA / DOH New License Application Request,DCA/DOH New License Application Request,Consumer & licensing,other,true,"Spacing fixed. License applications (street and food vendors, contractors): a service request. DCA is now DCWP."
+Vacant Lot,Vacant Lot,Sanitation & cleanliness,private,false,"Request to clean a vacant lot: the lot owner's duty. Continued as 'Lot Condition' from 2021-09-22, bridged here."
+Smoking,Smoking,Health & environment,private,false,
+Unsanitary Animal Pvt Property,Unsanitary Animal - Private Property,Health & environment,private,false,Abbreviation expanded. Animal waste/odor from animals kept on private property.
+Standing Water,Standing Water,Health & environment,private,false,"Judgment call: mosquito breeding in unmaintained pools, containers and roofs (private); puddles on the ground could be natural."
+Animal in a Park,Animal in a Park,Trees & parks,natural,false,"Judgment call: mostly wildlife (injured, sightings, removal, dead); off-leash dogs and strays (a large minority) are people-caused."
+Boilers,Boilers,Buildings & construction,private,false,
+Asbestos,Asbestos,Health & environment,private,false,"Two agencies use this type (DEP, DOHMH); building owners and contractors."
+DOF Property - Update Account,DOF Property - Owner Issue,Taxes & finance,other,false,"Since 2015-12; same descriptors as Owner Issue (billing address/name incorrect), which it overlaps. Merged."
+Drinking,Drinking,Public safety & conduct,private,false,"Alcohol (underage, after hours, in public). Unrelated to DOHMH 'Drinking Water' despite the shared word."
+BEST/Site Safety,BEST/Site Safety,Buildings & construction,private,false,
+Encampment,Homeless Encampment,Public safety & conduct,private,false,NYPD (then also DHS) name since 2020-01-09; 'Homeless Encampment' last seen 2020-04-29. Bridged.
+School Maintenance,School Maintenance,Social services & education,city,false,
+Housing Options,Housing Options,Information requests,other,true,DFTA information for seniors on assisted living and nursing homes.
+Water Quality,Water Quality,Water & sewer,city,false,"Taste, odor, cloudy tap water: DEP supply (building plumbing could be private)."
+Animal-Abuse,Animal Abuse,Public safety & conduct,private,false,NYPD's hyphenated spelling since 2018-06-23; 'Animal Abuse' last seen 2019-06-21; same six descriptors.
+Overflowing Litter Baskets,Overflowing Litter Baskets,Sanitation & cleanliness,city,false,"How often baskets are emptied is a DSNY service. Continued as 'Litter Basket Complaint' (mostly 'Overflowing') from 2021-09-22, bridged here."
+Derelict Bicycle,Derelict Bicycle,Sanitation & cleanliness,private,false,DSNY removal of abandoned bicycles.
+Noise Survey,Noise Survey,Noise,private,false,"311-run noise survey (2011-06 to 2012-11), descriptor 'People Created Noise'."
+Industrial Waste,Industrial Waste,Water & sewer,private,false,"Businesses discharging grease, oil, chemicals into sewers and catch basins."
+Miscellaneous Categories,DOB Inspection Work Order (Misc.),Buildings & construction,other,false,"Generic name. In the full data most rows are 'Inspection Work Order (DOB)' (internal work orders) and the rest 'FDNY Referral - Pilot'; the condition is not recorded, so origin other. Was 'FDNY Referral (DOB)', which described only the 2010 sample."
+Homeless Street Condition,Homeless Street Condition,Public safety & conduct,private,false,"Judgment call: NYPD 2020-01 to 2021-03, started with 'Encampment'; read as a person on the street rather than an encampment, so kept apart (descriptor N/A gives no evidence either way)."
+Drug Activity,Drug Activity,Public safety & conduct,private,false,
+Bus Stop Shelter Complaint,Bus Stop Shelter Complaint,Streets & sidewalks,city,false,"Broken glass, lighting, dirt at bus shelters (city-franchised street furniture)."
+Lost Property,Lost Property,Information requests,other,true,TLC lost items (mostly since 2019-06). Kept apart from 'Found Property' (lost vs found).
+Traffic/Illegal Parking,Illegal Parking,Traffic & parking,private,false,"NYPD's name until 2010-06-03, when it split into Illegal Parking and Traffic. Its parking descriptors (hydrant, sidewalk, double parking, overnight commercial) are most of its rows and continue under Illegal Parking, so it is bridged there; congestion, truck-route and drag-racing rows (a minority) moved to Traffic. Was its own type before the full data showed the split."
+Taxi Report,Taxi Report,Consumer & licensing,private,false,TLC since 2014-10 (descriptors 'Driver Report'). Judgment call: kept apart from 'Taxi Complaint' because TLC files them separately.
+Non-Residential Heat,Non-Residential Heat,Heat & hot water,private,false,DOHMH: inadequate heat in workplaces and commercial space; the owner's duty.
+Missed Collection,Missed Collection,Sanitation & cleanliness,city,false,"DSNY's name since 2021-09-21 for 'Missed Collection (All Materials)'; descriptors re-coded (Trash, Recycling, Bulky)."
+Noise - House of Worship,Noise - House of Worship,Noise,private,false,
+Indoor Sewage,Indoor Sewage,Health & environment,private,false,
+Investigations and Discipline (IAD),Investigations and Discipline (IAD),Buildings & construction,private,false,A DOB unit name: unlicensed electrical/plumbing work.
+DOF Parking - Request Status,DOF Parking - Request Status,Information requests,other,true,Status of hearings and appeals.
+Sweeping/Missed,Sweeping - Missed/Inadequate,Sanitation & cleanliness,city,false,"DSNY code 3A (2013-12 to 2021-09), split from 'Sweeping/Missed-Inadequate'."
+DOF Parking - Request Copy,DOF Parking - Request Copy,Information requests,other,true,"Ticket images, decisions, lists of tickets."
+ELEVATOR,Housing - Elevator,Housing conditions,private,false,HPD 2014 code (descriptor MAINTENANCE; was a CONSTRUCTION descriptor). Kept apart from DOB 'Elevator' (defective/uninspected devices); no shared descriptor.
+Recycling Enforcement,Recycling Enforcement,Sanitation & cleanliness,private,false,Retired 2021-09-21; recycling-separation violations continue as descriptors of the Residential/Commercial/Institution Disposal Complaint types.
+DPR Internal,DPR Internal Incident,Trees & parks,other,false,"Internal Parks log: injuries, property, lost persons. Not a public complaint."
+Unleashed Dog,Unleashed Dog,Health & environment,private,false,
+OEM Literature Request,Literature Request - OEM,Information requests,other,true,Ready NY emergency-preparedness guides. Renamed to the Literature Request - <agency> pattern; OEM is now NYCEM.
+OUTSIDE BUILDING,Housing - Outside Building,Housing conditions,private,false,"HPD 2014 code: roofing, pavement, roof door, porch, gutter, skylight; takes over most of HPD CONSTRUCTION."
+Borough Office,Borough Office,Buildings & construction,private,false,A DOB unit name; almost all rows are construction enforcement work orders.
+Panhandling,Panhandling,Public safety & conduct,private,false,
+Mobile Food Vendor,Mobile Food Vendor,Health & environment,private,false,DOHMH food safety of vendors; kept apart from NYPD 'Vending' (licence and location).
+Outdoor Dining,Outdoor Dining,Streets & sidewalks,private,false,DOT from 2020-07: restaurants' street/sidewalk setups.
+Unsanitary Pigeon Condition,Unsanitary Pigeon Condition,Health & environment,natural,false,Pigeon waste and odor: animals (people feeding them may contribute).
+COVID-19 Non-essential Construction,COVID-19 Non-essential Construction,Buildings & construction,private,false,DOB 2020-03 to 2021-08.
+Building Marshals office,Building Marshal's Office,Buildings & construction,private,false,"A DOB unit name: illegal activity, unlicensed work. Apostrophe and case fixed."
+DOF Parking - Tax Exemption,DOF Parking - Tax Exemption,Taxes & finance,other,false,Administrative.
+Urinating in Public,Urinating in Public,Public safety & conduct,private,false,
+Bike/Roller/Skate Chronic,Bike/Roller/Skate Chronic,Public safety & conduct,private,false,
+Public Payphone Complaint,Public Payphone Complaint,Consumer & licensing,private,false,"Privately operated payphones franchised by DoITT: damaged phones, lost coins. LinkNYC kiosks (from 2016) are a separate type; the payphone type continues alongside them."
+Sustainability Enforcement,Sustainability Enforcement,Buildings & construction,private,false,DOB work orders on owners' sustainability (energy) compliance.
+Dirty Condition,Dirty Conditions,Sanitation & cleanliness,private,false,"Singular spelling; mostly DSNY's post-2021-09-21 code (trash, dog waste, broken glass), a few 2019 rows."
+Elder Abuse,Elder Abuse,Social services & education,private,false,"A report of abuse by a person: a complaint, not a request."
+Sweeping/Missed-Inadequate,Sweeping - Missed/Inadequate,Sanitation & cleanliness,city,false,"Punctuation standardized. Missed or inadequate street sweeping. DSNY split code 3 into 3A Sweeping/Missed and 3B Sweeping/Inadequate around 2014-01 and re-coded both as Street Sweeping Complaint on 2021-09-23; all four map here, and the raw type and descriptor keep missed vs inadequate."
+Taxi Compliment,Taxi Compliment,Consumer & licensing,other,true,"A compliment, not a complaint; one letter away from 'Taxi Complaint'."
+Bridge Condition,Bridge Condition,Streets & sidewalks,city,false,Also absorbs DOT's one-row 'DEP Bridge Condition' (2021).
+Ferry Inquiry,Ferry Inquiry,Information requests,other,true,Staten Island Ferry lost and found and general inquiries.
+Unsanitary Condition,Housing - Unsanitary Condition,Housing conditions,private,false,"HPD's Title Case spelling (2018-06 to 2019-08, descriptor mostly blank); same type as UNSANITARY CONDITION."
+CONSTRUCTION,Housing - Construction,Housing conditions,private,false,"HPD ALL-CAPS code: roof, elevator, pavement, rain leader. Kept apart from HPD GENERAL CONSTRUCTION (no shared descriptor) and from DOB 'Construction' (inspection appointments; no shared descriptor). Retired 2014-03-10: roof/pavement/rain leader continue under OUTSIDE BUILDING, elevator under HPD ELEVATOR, vacant apartment as its own type. The largest successor takes under four fifths of its rows, so it stays a legacy type."
+Disorderly Youth,Disorderly Youth,Public safety & conduct,private,false,
+Day Care,Day Care,Social services & education,private,false,
+DRIE,DRIE,Social services & education,other,true,"Disability Rent Increase Exemption casework (DOF), like SCRIE."
+Mold,Mold,Health & environment,private,false,"DOHMH mold at commercial or workplace locations; apartment mold is under HPD (GENERAL CONSTRUCTION before 2014, UNSANITARY CONDITION since)."
+Found Property,Found Property,Information requests,other,true,"TLC lost-and-found reports for taxis. Kept apart from 'Lost Property' (items lost vs found), although they share descriptors."
+Home Delivered Meal - Missed Delivery,Home Delivered Meal - Missed Delivery,Social services & education,city,false,City-funded meals (DFTA contractors). Kept apart from the generic Home Delivered Meal Complaint.
+Mosquitoes,Mosquitoes,Health & environment,natural,false,
+Mass Gathering Complaint,Mass Gathering (COVID-19),Public safety & conduct,private,false,OSE/NYPD COVID-19 rules (2020-10 to 2021-09).
+DOF Property - RPIE Issue,DOF Property - RPIE Issue,Taxes & finance,other,false,Income and expense filing issues: administrative.
+Illegal Animal Kept as Pet,Illegal Animal Kept as Pet,Health & environment,private,false,Also absorbs the one-row 'Illegal Animal - Sold/Kept' (a rooster).
+Home Repair,Home Repair,Social services & education,other,true,DFTA home-repair help for seniors: a service request.
+Cranes and Derricks,Cranes and Derricks,Buildings & construction,private,false,
+Posting Advertisement,Posting Advertisement,Public safety & conduct,private,false,
+Vaccine Mandate Non-Compliance,COVID-19 Vaccine Mandate Non-Compliance,Health & environment,private,false,DOHMH from 2021-08: proof of vaccination not checked.
+Senior Center Complaint,Senior Center Complaint,Social services & education,city,false,City-funded senior centers (DFTA).
+For Hire Vehicle Report,For Hire Vehicle Report,Consumer & licensing,private,false,TLC 'Report' counterpart of For Hire Vehicle Complaint; kept apart as TLC does.
+Storm,Storm Debris Collection Request,Sanitation & cleanliness,other,true,"DSNY bulk pickup of storm-damaged items (2021-09, after Hurricane Ida): a service request."
+Ferry Complaint,Ferry Complaint,Other,city,false,Staten Island Ferry service (DOT).
+Snow Removal,Snow,Streets & sidewalks,natural,false,"DSNY 2019-12 to 2021-02, mostly 'Not Plowed': the same work as Snow's re-plow descriptors. Bridged."
+Window Guard,Window Guard,Housing conditions,private,false,"DOHMH: missing window guards in apartments, the owner's legal duty."
+Scaffold Safety,Scaffold Safety,Buildings & construction,private,false,
+Illegal Dumping,Illegal Dumping,Sanitation & cleanliness,private,false,"DSNY code since 2021-09-21. Earlier dumping sat inside Sanitation Condition and Dirty Conditions, which were wider, so they are not bridged here."
+Plant,Wastewater Treatment Plant,Water & sewer,city,false,"Vague name; DEP codes PO1/PN1 are odor/noise from DEP plants, read as wastewater treatment plants (judgment call on the name)."
+Bus Stop Shelter Placement,Bus Stop Shelter Placement,Streets & sidewalks,other,true,Request for a new or relocated shelter.
+Sweeping/Inadequate,Sweeping - Missed/Inadequate,Sanitation & cleanliness,city,false,"DSNY code 3B (2014-01 to 2021-09), split from 'Sweeping/Missed-Inadequate'."
+Alzheimer's Care,Alzheimer's Care,Social services & education,other,true,
+City Vehicle Placard Complaint,City Vehicle Placard Complaint,Traffic & parking,city,false,Misuse of city-issued parking placards by city employees: the city's own actions.
 Harboring Bees/Wasps,Harboring Bees/Wasps,Health & environment,natural,false,
+Collection Truck Noise,Noise - Collection Truck,Noise,city,false,"Renamed into the Noise - family. DSNY's own collection trucks, so city (private carting noise is under DEP noise). Last seen 2021-09-10; DSNY's 2021 'Sanitation Worker or Vehicle Complaint' is broader (spills, behavior, driving, noise), so it is not bridged."
+Question,Agency Contact Form,Information requests,other,true,"DCAS/Tax Commission web form: general inquiries, the topic is in the descriptor."
+Facades,Facade - Unsafe (LL11),Buildings & construction,private,false,DOB: unsafe facade notifications (Local Law 11).
+Beach/Pool/Sauna Complaint,Beach/Pool/Sauna Complaint,Health & environment,private,false,
+DOF Property - Property Value,DOF Property - Property Value,Taxes & finance,other,false,Assessment dispute: administrative.
+DOF Parking - DMV Clearance,DOF Parking - DMV Clearance,Taxes & finance,other,true,"Registration clearance request: a transaction, not a complaint."
+Request Xmas Tree Collection,Christmas Tree Collection Request,Sanitation & cleanliness,other,true,Pickup request (2014-19); missed tree pickups are a Missed Collection descriptor.
+OEM Disabled Vehicle,Disabled Vehicle (Snow Emergency),Traffic & parking,natural,false,"311/NYCEM 2010-16, descriptor 'Snow Emergency': vehicles stuck during snow emergencies."
+Private or Charter School Reopening,COVID-19 School Reopening Non-Compliance,Health & environment,private,false,OSE 2020-10 onward: schools reopening against COVID-19 rules.
+HEAP Assistance,HEAP Assistance,Social services & education,other,true,Home Energy Assistance Program help: a benefit request.
+Poison Ivy,Poison Ivy,Health & environment,natural,false,
+Drinking Water,Drinking Water,Health & environment,other,false,"Illness blamed on drinking water; source (city supply or building) unknown, so other."
+Bike Rack Condition,Bike Rack Condition,Streets & sidewalks,city,false,
+Quality of Life,Illegal Conversion Follow-Up,Buildings & construction,private,false,Vague name; every row is DOB's 'Illegal Conversion No Access Follow-Up'.
+Dead Animal,Dead Animal,Sanitation & cleanliness,natural,false,"DSNY code since 2021-09-22; before, the '12 Dead Animals' descriptor of Sanitation Condition."
+Construction Lead Dust,Construction Lead Dust,Health & environment,private,false,
+Utility Program,Utility Program,Social services & education,other,true,DFTA utility assistance program.
+Executive Inspections,Executive Inspections,Buildings & construction,private,false,A DOB unit name: enforcement work orders.
+Forms,Agency Contact Form,Information requests,other,true,"ACS, COIB, DOHMH and others' web forms: general inquiries, the topic is in the descriptor."
+DHS Advantage - Third Party,DHS Advantage - Third Party,Social services & education,other,true,Advantage rent-subsidy program casework.
+Tattooing,Tattooing,Health & environment,private,false,
+Highway Sign - Damaged,Highway Sign - Damaged,Streets & sidewalks,city,false,
+DOF Property - City Rebate,DOF Property - City Rebate,Information requests,other,true,Mostly status questions about the property-tax rebate check.
+Forensic Engineering,Forensic Engineering,Buildings & construction,other,false,"A DOB unit name: structural monitoring, including buildings destroyed by Sandy; mixed causes."
+General,Housing - General,Housing conditions,private,false,"HPD's Title Case spelling (2018-06 to 2019-06, descriptor blank); same type as GENERAL."
+Weatherization,Weatherization,Social services & education,other,true,DFTA weatherization assistance: a program request.
+Residential Disposal Complaint,Residential Disposal Complaint,Sanitation & cleanliness,private,false,"DSNY 2021 code (waste not secured, set out at wrong time, not separated)."
+Safety,School Safety,Social services & education,private,false,"Vague name. DOE rows (2010-11) are school safety, harassment, altercations (student behavior, so private). The full data adds HPD rows from 2018-19 in this Title Case spelling with blank descriptors (housing safety, like HPD SAFETY). The raw string cannot tell them apart, so the majority (DOE) meaning is kept and the agency column separates them. Judgment call."
+Unsanitary Animal Facility,Unsanitary Animal Facility,Health & environment,private,false,
+LinkNYC,LinkNYC Kiosk,Consumer & licensing,private,false,"DoITT franchise kiosks (from 2016), like payphones; kept apart from Public Payphone Complaint (both continue)."
+Home Delivered Meal Complaint,Home Delivered Meal Complaint,Social services & education,city,false,City-funded meals (DFTA contractors).
+Special Natural Area District (SNAD),Special Natural Area District (SNAD),Buildings & construction,private,false,Illegal tree removal or grading in a special natural area (DOB).
+Municipal Parking Facility,Municipal Parking Facility,Traffic & parking,city,false,
+Obstruction,Sidewalk Obstruction,Sanitation & cleanliness,private,false,"Vague DSNY 2021 name; descriptors are weeds, merchandise, trash, signs and displays blocking the sidewalk."
+Animal Facility - No Permit,Animal Facility - No Permit,Health & environment,private,false,
+Stalled Sites,Stalled Sites,Buildings & construction,private,false,
+Advocate-Personal Exemptions,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Street Sweeping Complaint,Sweeping - Missed/Inadequate,Sanitation & cleanliness,city,false,"DSNY's name since 2021-09-23 (Street Not Swept, Inadequate Sweeping)."
+Pet Shop,Pet Shop,Health & environment,private,false,
+Wood Pile Remaining,Wood Pile Remaining,Trees & parks,city,false,Judgment call: wood left after Parks tree work (city).
+Highway Sign - Missing,Highway Sign - Missing,Streets & sidewalks,city,false,
+Uprooted Stump,Uprooted Stump,Trees & parks,city,false,Judgment call: stump left after a tree was removed; removal is Parks' work (city).
+Illegal Animal Sold,Illegal Animal Sold,Health & environment,private,false,
+Adopt-A-Basket,Adopt-A-Basket Request,Sanitation & cleanliness,other,true,Volunteer litter-basket program sign-up.
+Eviction,Senior Eviction Assistance,Social services & education,other,true,Vague name; DFTA descriptors are mobile/homebound seniors asking for eviction help.
+FATF,DEP Internal Code (FATF),Other,other,false,"Unexplained DEP code with a blank descriptor; meaning not recorded in the data, so it keeps its own canonical type rather than being merged with other codes."
+Public Toilet,Public Toilet,Streets & sidewalks,city,false,Automatic public toilets (city franchise).
+DOF Parking - Address Update,DOF Parking - Address Update,Taxes & finance,other,true,"Records update: a transaction, not a complaint."
+Advocate-Prop Refunds/Credits,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Litter Basket Request,Litter Basket Request,Sanitation & cleanliness,other,true,DSNY's name since 2021-09-21 for 'Litter Basket / Request' (descriptor 'New Basket').
+Green Taxi Complaint,Green Taxi Complaint,Consumer & licensing,private,false,"Boro (green) taxis, from 2019-06."
+Ferry Permit,Ferry Permit,Consumer & licensing,other,true,Permit to perform on the ferry: a request.
+Teaching/Learning/Instruction,Teaching/Learning/Instruction,Social services & education,city,false,
+DEP Street Condition,Street Condition,Streets & sidewalks,city,false,"DOT since 2019-07: street defects caused by DEP (cave-ins, catch basins); same condition as Street Condition."
+Discipline and Suspension,Discipline and Suspension,Social services & education,city,false,DOE suspension process and student rights: the school system's actions.
+Parking Card,Parking Card,Traffic & parking,city,false,Parking card not dispensed by a DOT vending machine.
+Taxpayer Advocate Inquiry,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Highway Sign - Dangling,Highway Sign - Dangling,Streets & sidewalks,city,false,
+Litter Basket Complaint,Overflowing Litter Baskets,Sanitation & cleanliness,city,false,DSNY's name since 2021-09-22; mostly 'Overflowing' (a few 'Misuse'). Bridged.
+Summer Camp,Summer Camp,Social services & education,private,false,DOHMH 2010-13; later a 'Day Care' descriptor.
+Illegal Posting,Illegal Posting,Sanitation & cleanliness,private,false,"DSNY 2021 code (posters, flyers, stickers). Kept apart from NYPD 'Posting Advertisement' (vehicles, buildings); different agency, no shared descriptor."
+Sanitation Worker or Vehicle Complaint,Sanitation Worker or Vehicle Complaint,Sanitation & cleanliness,city,false,"DSNY 2021 code about its own workers and trucks (spills, behavior, driving, noise), so city."
+Bereavement Support Group,Bereavement Support Group,Social services & education,other,true,
+Advocate - Other,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Special Operations,Special Operations,Buildings & construction,other,false,A DOB unit name: semi-annual homeless-shelter and multi-agency inspections; origin unclear.
+Home Care Provider Complaint,Home Care Provider Complaint,Social services & education,city,false,DFTA-contracted home care.
+Case Management Agency Complaint,Case Management Agency Complaint,Social services & education,city,false,DFTA-contracted case management.
+ATF,DEP Internal Code (ATF),Other,other,false,"Unexplained DEP code with a blank descriptor; meaning not recorded in the data, so it keeps its own canonical type rather than being merged with other codes."
+Lot Condition,Vacant Lot,Sanitation & cleanliness,private,false,"DSNY's name since 2021-09-22 for 'Vacant Lot' (trash, debris on lots). Bridged."
+Abandoned Bike,Derelict Bicycle,Sanitation & cleanliness,private,false,DSNY's name since 2021-09-21 ('Chained to Public Property'); 'Derelict Bicycle' last seen 2021-09-21.
+Dumpster Complaint,Dumpster Complaint,Sanitation & cleanliness,private,false,DSNY 2021 code.
+Lifeguard,Lifeguard,Health & environment,private,false,
+X-Ray Machine/Equipment,X-Ray Machine/Equipment,Health & environment,private,false,
+Overflowing Recycling Baskets,Overflowing Recycling Baskets,Sanitation & cleanliness,city,false,DSNY code 6R; kept apart from litter baskets (different bins).
+Comments,Agency Contact Form,Information requests,other,true,"DCAS/Tax Commission web form: general inquiries, the topic is in the descriptor."
+Registration and Transfers,Registration and Transfers,Social services & education,other,true,School registration and transfer requests.
+FCST,DEP Internal Code (FCST),Other,other,false,"Unexplained DEP code with a blank descriptor; meaning not recorded in the data, so it keeps its own canonical type rather than being merged with other codes."
+Transportation Provider Complaint,Transportation Provider Complaint,Social services & education,city,false,DFTA-contracted senior transportation.
+Legal Services Provider Complaint,Legal Services Provider Complaint,Social services & education,city,false,DFTA-contracted legal services.
+Bottled Water,Bottled Water,Health & environment,private,false,
+Health,School Health,Social services & education,city,false,Vague name; DOE descriptors are unhealthy conditions in schools.
+Calorie Labeling,Calorie Labeling,Health & environment,private,false,
+DHS Income Savings Requirement,DHS Income Savings Requirement,Social services & education,other,true,Form request.
+Cooling Tower,Cooling Tower,Health & environment,private,false,
+Peeling Paint,Peeling Paint (Lead),Health & environment,private,false,DOHMH lead-poisoning prevention (peeling paint inside a home); kept apart from HPD PAINT/PLASTER repairs.
+E-Scooter,E-Scooter,Traffic & parking,private,false,DOT 2021: improperly parked or abandoned shared scooters.
+Tunnel Condition,Tunnel Condition,Streets & sidewalks,city,false,
+Radioactive Material,Radioactive Material,Health & environment,private,false,
+Research Questions,Agency Contact Form,Information requests,other,true,"DCP web form: general inquiries, the topic is in the descriptor."
+Foam Ban Enforcement,Foam Ban Enforcement,Sanitation & cleanliness,private,false,DSNY ban on foam containers; continued as 'Retailer Complaint' (descriptor 'Foam Use') in 2021-10.
+Advocate-Co-opCondo Abatement,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Commercial Disposal Complaint,Commercial Disposal Complaint,Sanitation & cleanliness,private,false,"DSNY 2021 code (no private carter, waste left out)."
+Unlicensed Dog,Unlicensed Dog,Health & environment,private,false,
+Squeegee,Squeegee,Public safety & conduct,private,false,
+DOR Literature Request,Literature Request - DORIS,Information requests,other,true,Records order forms (birth/death/marriage certificates). Follows the Literature Request - <agency> pattern.
+Parent Leadership,Parent Leadership,Social services & education,city,false,
+Tanning,Tanning,Health & environment,private,false,
+Green Taxi Report,Green Taxi Report,Consumer & licensing,private,false,
+Dept of Investigations,DOI Integrity Referral,Buildings & construction,other,false,Referral from the Department of Investigation to DOB.
+Advocate-Property Value,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Single Occupancy Bathroom,Single Occupancy Bathroom Signage,Buildings & construction,private,false,"Renamed after its only descriptor (missing/improper sign, DOB)."
+Building Condition,Bikes in Buildings,Buildings & construction,private,false,Vague DOT name; every row is 'Bikes in Buildings' (access for bicycles).
+FHV Licensee Complaint,FHV Licensee Complaint,Consumer & licensing,private,false,
+Incorrect Data,Collection Schedule Data Error,Sanitation & cleanliness,city,false,Vague DSNY 2021 name: wrong collection days in the city's own information.
+Trans Fat,Trans Fat,Health & environment,private,false,
+Dispatched Taxi Complaint,Dispatched Taxi Complaint,Consumer & licensing,private,false,One letter away from 'Dispatched Taxi Compliment'.
+Taxi Licensee Complaint,Taxi Licensee Complaint,Consumer & licensing,private,false,
+No Child Left Behind,No Child Left Behind,Social services & education,other,true,School choice/transfer requests.
+Water Maintenance,Water System,Water & sewer,city,false,"DEP 2010-only code (hydrant defects), the same work as Water System. Bridged."
+Interior Demo,Interior Demolition,Buildings & construction,private,false,Abbreviation expanded (DOB).
+NORC Complaint,NORC Complaint,Social services & education,city,false,City-funded Naturally Occurring Retirement Community programs (DFTA).
+Advocate-Commercial Exemptions,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+SRDE,DEP Internal Code (SRDE),Other,other,false,"Unexplained DEP code with a blank descriptor; meaning not recorded in the data, so it keeps its own canonical type rather than being merged with other codes."
+Advocate-SCRIE/DRIE,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Special Enforcement,Special Enforcement,Buildings & construction,private,false,DOB professional-certification audits.
+Institution Disposal Complaint,Institution Disposal Complaint,Sanitation & cleanliness,private,false,DSNY 2021 code.
+Real Time Enforcement,Real Time Enforcement,Buildings & construction,private,false,DOB: work without a permit.
+STRUCTURAL,Housing - Water Leak,Housing conditions,private,false,"Short-lived HPD code (2013-10), every row descriptor WATER-LEAKS: bridged to the 2014 WATER LEAK type."
+Fire Alarm - Reinspection,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+Internal Code,DEP Internal Code,Other,other,false,DEP noise/air codes marked 'For DEP internal use only'.
+Portable Toilet,Portable Toilet,Health & environment,private,false,
+Advocate - Lien,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Public Assembly,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+Advocate - RPIE,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Fire Alarm - New System,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+Advocate-Prop Class Incorrect,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+AGENCY,Housing - Quality Standards (HQS),Housing conditions,private,false,Unusual name: a generic word for HPD complaints under Housing Quality Standards (Section 8 units).
+Rangehood,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+Transfer Station Complaint,Transfer Station Complaint,Sanitation & cleanliness,private,false,Was descriptor E30 under Other Enforcement before 2021-09.
+VACANT APARTMENT,Housing - Vacant Apartment,Housing conditions,private,false,HPD (abandoned apartment unit); a CONSTRUCTION descriptor before 2014.
+Advocate-Business Tax,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+DEP Highway Condition,Highway Condition,Streets & sidewalks,city,false,DOT since 2019-07: DEP-caused highway defects.
+ZTESTINT,Invalid Entry - Test Record,Invalid entries,other,false,DEP test record (2013-18).
+Employee Behavior,Sanitation Worker or Vehicle Complaint,Sanitation & cleanliness,city,false,"DSNY code CP1 (2019-20): worker behavior, now a descriptor of the 2021 worker/vehicle type."
+DEP Sidewalk Condition,Sidewalk Condition - DEP Hardware,Streets & sidewalks,city,false,"DOT since 2019-07: DEP hardware or cave-ins in the sidewalk. Kept apart from Sidewalk Condition because the owner is the city (DEP), not the property owner."
+DSNY Spillage,Sanitation Worker or Vehicle Complaint,Sanitation & cleanliness,city,false,"DSNY code 4 (2019-20): spillage by DSNY trucks, now 'Spilled Garbage' under the 2021 worker/vehicle type."
+Outside Building,Housing - Outside Building,Housing conditions,private,false,"HPD's Title Case spelling (2019, descriptor blank); same type as OUTSIDE BUILDING."
+Standpipe - Mechanical,FDNY Inspection Request,Buildings & construction,other,true,Unusual entry: an FDNY-style inspection request ('Voluntary') recorded under DSNY in 2012-05.
+General Question,Agency Contact Form,Information requests,other,true,"CEO web form: general inquiries, the topic is in the descriptor."
+Advocate-UBT,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+DOF Property - State Rebate,DOF Property - State Rebate,Information requests,other,true,"Five 2010 rows, like City Rebate."
+Select Message Type...,Agency Contact Form,Information requests,other,true,"MOC/OMB web form; unusual entry, the form's placeholder was never changed: general inquiries, the topic is in the descriptor."
+SRGOVG,DEP Internal Code (SRGOVG),Other,other,false,"Unexplained DEP code with a blank descriptor; meaning not recorded in the data, so it keeps its own canonical type rather than being merged with other codes."
+Fire Alarm - Modification,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+..\..\..\..\..\..\..\..\..\...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Hazardous Material,Hazardous Materials,Health & environment,private,false,Singular spelling (four 2010 DEP rows).
+SNW,DOT Internal Code (SNW),Other,other,false,"Unexplained DOT code with a blank descriptor; meaning not recorded in the data, so it keeps its own canonical type rather than being merged with other codes."
+../../../../../../../../../...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Appliance,Housing - Appliance,Housing conditions,private,false,HPD's Title Case spelling (2019); same type as APPLIANCE.
+Misc. Comments../../../../....,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Sprinkler - Mechanical,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+DSNY Internal,DSNY Internal Enforcement Request,Sanitation & cleanliness,other,false,Internal DSNY record.
+file:///etc/passwd,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+ZSYSTEST,Invalid Entry - Test Record,Invalid entries,other,false,DEP system test record.
+Snow or Ice,Snow,Streets & sidewalks,natural,false,"DSNY's name from 2021-10 (Roadway, Sidewalk); 'Snow' last seen 2021-03-20. Bridged."
+Hazmat Storage/Use,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+AHV Inspection Unit,After Hours Variance (AHV) Inspection,Buildings & construction,private,false,Abbreviation expanded: DOB checks of after-hours work permits.
+Gas Station Discharge Lines,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+Misc. Comments..\..\..\..\....,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Advocate - Levy,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Homebound Evacuation 4,Homebound Evacuation Request,Social services & education,other,true,FDNY 2018: evacuation help for a homebound person (wheelchair).
+Trapping Pigeon,Trapping Pigeon,Health & environment,private,false,
+Retailer Complaint,Foam Ban Enforcement,Sanitation & cleanliness,private,false,"Vague DSNY 2021 name; descriptor 'Foam Use', so the foam ban."
+1430*4963,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+./validate_form.php,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments]]&gt;&gt;&lt;,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments%}dt2pq'/&quo...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments{${sleep(20)}},Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+qfix4${695*589}lixaf,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%c0%ae/WEB-INF/web.xml,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+...\./...\./...\./...\./......,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'+(select*fro...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'+eval(compil...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+"Misc. Comments,(select*from...",Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments52038737' or ...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+{!xmlparser v='&lt;!DOCTYPE...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%2e%2e%2f%2e%2e%2f%2e%2e%2f...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+.../....///.../....///.../....,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+../../../../WEB-INF/web.xml,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments&amp;nslookup...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments|echo 3p7wexz...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+() { :;}; /bin/sleep 11,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments|ping -c 21 1...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments&quot;|ping -...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments}}t2v95'/&quo...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments&quot;,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+DEP Bridge Condition,Bridge Condition,Streets & sidewalks,city,false,One 2021 DOT row (DEP plate).
+idexf3mrb7)(!(objectClass=*),Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%E5%98%8A%E5%98%8DX-Injecti...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+../../WEB-INF/web.xml;x=,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+file:///c:/windows/win.ini,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments' and 7702=77...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+&lt;odb xmlns:xi=&quot;http...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+266dyrgvhg1egsyp2oq57axbm2s...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+http://g7orz5h9iu2sh6z332rj...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments&quot;|echo 2...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments');declare @q...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Request Changes - A.S.P.,Alternate Side Parking Change Request,Traffic & parking,other,true,DSNY code 16 (one row).
+hcvn1{{687*375}}gji51,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments69075347' or ...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+DOF Literature Request,Literature Request - DOF,Information requests,other,true,"One row (DRIE tenant guide), recorded under DOHMH. Follows the Literature Request - <agency> pattern."
+Misc. Comments&amp;ping -n ...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+SG-99,DEP Internal Code (SG-99),Other,other,false,"Unexplained DEP code with a blank descriptor; meaning not recorded in the data, so it keeps its own canonical type rather than being merged with other codes."
+Public Assembly - Temporary,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+nslookup -q=cname nneyfcxgy...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments;declare @q v...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+/etc/passwd,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+$(sleep 11),Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+MOLD,Mold,Health & environment,private,false,One DOHMH row in capitals; same type as 'Mold'.
+Meals Home Delivery Required,Home Delivered Meal Request,Social services & education,other,true,One 311 row.
+LEAD,Lead Hazard (DOHMH),Health & environment,other,false,"One DOHMH row, no descriptor. Kept apart from DEP 'Lead' (test-kit requests); new spellings of 'lead' resolve to DEP's meaning and are flagged."
+Injured Wildlife,Injured Wildlife,Health & environment,natural,false,One DOHMH row.
+Change Collection Schedule,Collection Schedule Change Request,Sanitation & cleanliness,other,true,DSNY code 23 (one row).
+Misc. Comments88909845' or ...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Commentseowljujfh8,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Asbestos/Garbage Nuisance,Asbestos/Garbage Nuisance,Health & environment,private,false,One DOHMH row.
+.../...//.../...//.../...//...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+g0oii1s4s5)(objectClass=*,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Recycling Basket Complaint,Overflowing Recycling Baskets,Sanitation & cleanliness,city,false,"DSNY 2021 name (one row, 'Overflowing')."
+Misc. Comments',Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Dispatched Taxi Compliment,Dispatched Taxi Compliment,Consumer & licensing,other,true,"A compliment, not a complaint; one letter away from 'Dispatched Taxi Complaint'."
+Misc. Comments' and '1618'=...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+"Misc. Comments',0)waitfor d...",Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+c:\windows\win.ini,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Fire Alarm - Replacement,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+Misc. Comments);declare @q ...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+kawn''lcgv,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments|nslookup -q=...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments&amp;echo xjd...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+() { :;}; /bin/sleep 0,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments' waitfor del...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+*)(objectClass=*,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+.../.\.../.\.../.\.../.\......,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Electric,Housing - Electric,Housing conditions,private,false,HPD's Title Case spelling (one 2019 row); same type as ELECTRIC.
+Misc. Comments'+(select loa...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%{4761*8506},Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+*)(!(objectClass=*),Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+c:\windows\win.ini Misc. Co...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+...\.\...\.\...\.\...\.\......,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+../WEB-INF/web.xml,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments|ping -n 21 1...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+(select load_file('\\\\615h...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+../../../WEB-INF/web.xml;x=,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments&gt;  BCC:bl0...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'+(function()...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'.sleep(20).',Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%2e%2e%5c%2e%2e%5c%2e%2e%5c...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+(select extractvalue(xmltyp...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+.../Misc. Comments,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Commentso0w3r%&gt;xb6...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+\windows\win.ini,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+`sleep 11`,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+..././..././..././..././......,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+../../../WEB-INF/web.xml,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+/./validate_form.php,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'|ping -c 21 ...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%{(#dm=@ognl.OgnlContext@DE...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+../../WEB-INF/web.xml,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments' and (select...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments47876391' or ...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%c0%ae/%c0%ae/WEB-INF/web.xml,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+../WEB-INF/web.xml;x=,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments  BCC:a5glxzf...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments' and '7835'=...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+a'a\'b&quot;c&gt;?&gt;%}}%%...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+eval(compile('for x in rang...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+yw97y0gi2s,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%c0%ae/%c0%ae/%c0%ae/WEB-IN...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+() { _; } &gt;_,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments' and 6049=60...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments')waitfor del...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+%2fetc%2fpasswd,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+@(9313*3464),Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+MSOTHER,DEP Internal Code (MSOTHER),Other,other,false,"Unexplained DEP code with a blank descriptor; meaning not recorded in the data, so it keeps its own canonical type rather than being merged with other codes."
+%c0%ae/%c0%ae/%c0%ae/%c0%ae...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+bcd9&lt;!--esi--&gt;1ggp&lt...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'&quot;`0&amp...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments';declare @q ...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'(select*from...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Water Leak,Water Leak (DOT),Other,other,false,One 2019 DOT row ('General Maintenance'). Kept apart from HPD WATER LEAK; no shared descriptor.
+Building Marshal's Office,Building Marshal's Office,Buildings & construction,private,false,"One 2020 row; normalize() does not join it with 'Building Marshals office', so merged here."
+&lt;vlv xmlns=&quot;http://...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'+sleep(20.to...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Misc. Comments'|echo y9v6fc...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+${3804*3137},Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+&quot;--&gt;'--&gt;`--&gt;&...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
+Open Flame Permit,FDNY Inspection Request,Buildings & construction,other,true,"FDNY fire-protection inspection or permit request (2018 intake); one canonical type, the raw type keeps the system."
+Illegal Animal - Sold/Kept,Illegal Animal Kept as Pet,Health & environment,private,false,"One row (rooster); the combined name is ambiguous, read as kept (roosters are mostly kept)."
+Advocate-Foreclosure,DOF Taxpayer Advocate Case,Taxes & finance,other,false,"DOF Taxpayer Advocate (2015-19): the topic sits in the type name ('Advocate-...', spaced and unspaced hyphens) or, for 'Taxpayer Advocate Inquiry', in the descriptor. One canonical type."
+Misc. Comments'||(select ex...,Invalid Entry - Web Form Probe,Invalid entries,other,false,"Security-scanner input (path traversal, SQL/command/template injection) typed into the DVS web form on 2019-06-07, descriptor 'Trauma Counseling'. Not a complaint."
