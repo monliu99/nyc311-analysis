@@ -118,3 +118,15 @@ def test_report_shows_missing_text_as_null_left_aligned(tmp_path):
     lines = rep.emit().splitlines()
     assert lines[2].startswith("NULL ")
     assert "NaN" not in "\n".join(lines) and "None" not in "\n".join(lines)
+
+
+def test_connect_works_with_a_quote_in_the_work_path(tmp_path):
+    cfg = Config.from_args(["--out", str(tmp_path / "o"), "--work", str(tmp_path / "it's work")])
+    con = cfg.connect()
+    assert con.sql("select 1").fetchone()[0] == 1
+
+
+def test_paths_expand_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = Config.from_args(["--out", "~/o", "--work", "~/w"])
+    assert cfg.out_dir == tmp_path / "o" and cfg.work_dir == tmp_path / "w"

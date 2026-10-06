@@ -94,7 +94,7 @@ From this folder, with [uv](https://docs.astral.sh/uv/):
 
 ```
 uv run --no-project --with-requirements requirements.txt python run_all.py   # defaults to data/sample/
-uv run --no-project --with-requirements requirements.txt pytest              # 33 tests on the sample
+uv run --no-project --with-requirements requirements.txt pytest              # the full test suite, on the sample
 ```
 
 ## Folder layout

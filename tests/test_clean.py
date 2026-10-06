@@ -149,13 +149,13 @@ def test_unordered_neighbor_files_do_not_flag_years_of_days(tmp_path):
     import duckdb
     part = tmp_path / "raw.parquet"
     duckdb.sql(f"""copy (
-        select '311_batch_0001.json' as _file, strftime(timestamp '2015-01-01' + to_days(i % 3), '%Y-%m-%dT%H:%M:%S.000') as created_date
+        select '311_batch_0001.json' as _file, strftime(timestamp '2015-01-01' + to_days(cast(i % 3 as integer)), '%Y-%m-%dT%H:%M:%S.000') as created_date
         from range(100) t(i)
         union all
-        select '311_batch_0003.json', strftime(timestamp '2015-01-01' + to_days(i * 14), '%Y-%m-%dT%H:%M:%S.000')
+        select '311_batch_0003.json', strftime(timestamp '2015-01-01' + to_days(cast(i * 14 as integer)), '%Y-%m-%dT%H:%M:%S.000')
         from range(100) t(i)
         union all
-        select '311_batch_0004.json', strftime(timestamp '2019-01-05' + to_days(i % 2), '%Y-%m-%dT%H:%M:%S.000')
+        select '311_batch_0004.json', strftime(timestamp '2019-01-05' + to_days(cast(i % 2 as integer)), '%Y-%m-%dT%H:%M:%S.000')
         from range(100) t(i)
     ) to '{part.as_posix()}' (format parquet)""")
     manifest = pd.DataFrame({"file": ["311_batch_0001.json", "311_batch_0003.json", "311_batch_0004.json"],

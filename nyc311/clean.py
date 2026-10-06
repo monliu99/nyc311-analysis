@@ -23,7 +23,7 @@ def clean_path(cfg):
 
 
 def clean_glob(cfg):
-    return f"read_parquet('{clean_path(cfg).as_posix()}')"
+    return "read_parquet('" + clean_path(cfg).as_posix().replace("'", "''") + "')"
 
 
 def parse_community_board(values):
@@ -115,7 +115,7 @@ def run(cfg):
     from nyc311 import taxonomy
 
     con = cfg.connect()
-    raw = f"read_parquet('{ingest.raw_glob(cfg)}', union_by_name=true)"
+    raw = ingest.raw_source(cfg)
     manifest = pd.read_parquet(cfg.work_dir / "manifest.parquet")
 
     _register(con, "cb_lookup", parse_community_board(
@@ -198,7 +198,7 @@ def run(cfg):
                                               then g.geo_cd end) as special_area_cd,
                coalesce(c.duration_h > {rules.LONG_DURATION_HOURS}, false) as closed_after_1yr
         from c left join geo_lookup g using (latitude, longitude) left join zip_boro zb using (zip)
-        ) to '{clean_path(cfg).as_posix()}' (format parquet, compression zstd)""")
+        ) to '{clean_path(cfg).as_posix().replace("'", "''")}' (format parquet, compression zstd)""")
     _report(con, cfg)
 
 

@@ -84,15 +84,15 @@ class Config:
         unknown = set(stages) - set(STAGES)
         if unknown:
             p.error(f"unknown stages: {sorted(unknown)}")
-        return cls(a.data, Path(a.out), Path(a.work), threads, a.memory_limit or default_memory_limit(), stages)
+        return cls(a.data, Path(a.out).expanduser(), Path(a.work).expanduser(), threads, a.memory_limit or default_memory_limit(), stages)
 
     def connect(self):
         tmp = self.work_dir / "duckdb_tmp"
         tmp.mkdir(parents=True, exist_ok=True)
         con = duckdb.connect()
         con.execute(f"SET threads = {int(self.threads)}")
-        con.execute(f"SET temp_directory = '{tmp.as_posix()}'")
+        con.execute("SET temp_directory = '" + tmp.as_posix().replace("'", "''") + "'")
         con.execute("SET preserve_insertion_order = false")
         if self.memory_limit:
-            con.execute(f"SET memory_limit = '{self.memory_limit}'")
+            con.execute("SET memory_limit = '" + str(self.memory_limit).replace("'", "''") + "'")
         return con
