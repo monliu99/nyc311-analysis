@@ -1,4 +1,5 @@
 """Stage 3: one typed, flagged row per raw row (nothing dropped). Decisions live in rules.py."""
+import datetime as dt
 import re
 
 import pandas as pd
@@ -56,8 +57,9 @@ def clean_zip(values):
 
 def incomplete_days(con, raw, manifest):
     """Days whose rows are partly in files we don't have (each day's rows are split across about two
-    consecutive files): after the last file's median date, the late days of any truncated file, and the
-    days between the median dates of the files on either side of a missing batch number."""
+    consecutive files): after the last file's median date, the late days of any truncated file, the days
+    between the median dates of the files on either side of a missing batch number, and every day after the
+    start of a cluster of missing numbers at the end of the pull (rules.SPARSE_TAIL_*)."""
     d = con.sql(f"""
         with r as (select _file, {CR} ts from {raw} r where r.created_date is not null),
         m as (select _file, quantile_disc(ts, 0.5) med from r group by 1),
@@ -86,13 +88,38 @@ def incomplete_days(con, raw, manifest):
         if not between or (between & present):
             continue
         days |= set(pd.date_range(prev.p50 + pd.Timedelta(days=1), nxt.p50 - pd.Timedelta(days=1)).date)
+    # A cluster of missing numbers at the end: overlapping neighbors hide single gaps, so flag the whole tail.
+    if present:
+        last_num = max(present)
+        missing = sorted(set(range(min(present), last_num + 1)) - present)
+        for i, g in enumerate(missing):
+            n_missing = len(missing) - i
+            if (n_missing >= rules.SPARSE_TAIL_MIN_MISSING
+                    and n_missing / (last_num - g + 1) >= rules.SPARSE_TAIL_MISSING_SHARE):
+                before = numbered[numbered.num < g]
+                if len(before):
+                    days |= set(pd.date_range(before.p50.iloc[-1] + pd.Timedelta(days=1), d.mx.max()).date)
+                break
     return days
 
 
-def unresolved_sql(col):
+def unresolved_sql(col, closed_col):
+    """An open status and no close date (an open status with a close date is a status_conflict instead)."""
     not_open = rules.CLOSED_STATUSES + rules.NOT_UNRESOLVED_STATUSES + rules.TEST_STATUSES + rules.NULL_IF["status"]
     vals = ", ".join("'" + v.replace("'", "''") + "'" for v in not_open)
-    return f"coalesce({col} is not null and trim({col}) not in ({vals}), false)"
+    return f"coalesce({col} is not null and trim({col}) not in ({vals}) and {closed_col} is null, false)"
+
+
+def full_years(con, src):
+    """Calendar years with every day inside the span of date-ordered rows and no day flagged possibly incomplete."""
+    d0, d1 = con.sql(f"""select min(created)::date, max(created)::date from {src}
+                         where created is not null and not out_of_file_order""").fetchone()
+    if d0 is None:
+        return []
+    flagged = {int(r[0]) for r in con.sql(
+        f"select distinct year(created) from {src} where possibly_incomplete_day").fetchall()}
+    return [y for y in range(d0.year, d1.year + 1)
+            if d0 <= dt.date(y, 1, 1) and dt.date(y, 12, 31) <= d1 and y not in flagged]
 
 
 def _nullif(col, values):
@@ -208,7 +235,7 @@ def run(cfg):
                coalesce(r.cr = date_trunc('day', r.cr), false) as date_only_created,
                coalesce(r.cl = date_trunc('day', r.cl), false) as date_only_closed,
                {_in('r.status', rules.TEST_STATUSES)} as is_test,
-               {unresolved_sql('r.status')} as unresolved,
+               {unresolved_sql('r.status', 'r.cl')} as unresolved,
                coalesce(r.cl is not null and trim(r.status) <> 'Closed', false) as status_conflict,
                d.file_row_number is not null as dup_key,
                case when trim(r.status) = 'Closed' and r.cl >= r.cr

@@ -57,7 +57,7 @@ def test_cleaning_flags_rows_instead_of_dropping_them(cleaned):
     ("closed_placeholder", 367),
     ("closed_before_created", 2_921),
     ("is_test", 6),
-    ("unresolved", 6_435),
+    ("unresolved", 3_452),
     ("status_conflict", 2_983),
     ("date_only_closed", 94_435),
     ("closed_at_creation", 8_600),
@@ -167,13 +167,59 @@ def test_unordered_neighbor_files_do_not_flag_years_of_days(tmp_path):
 def test_any_open_status_counts_as_unresolved(cleaned):
     from nyc311 import rules
     assert "Closed" in rules.CLOSED_STATUSES and "Cancelled" in rules.NOT_UNRESOLVED_STATUSES
-    sql = clean.unresolved_sql("s")
+    sql = clean.unresolved_sql("s", "c")
     con, _ = cleaned
-    got = con.sql(f"""select s, {sql} u from (values ('Closed'), ('In Progress'), ('Email Sent'), ('Cancelled'),
-                                                     ('Closed - Testing'), ('Draft'), (null), ('Pending')) t(s)""").df()
+    got = con.sql(f"""select s, {sql} u from (values ('Closed', null), ('In Progress', null), ('Email Sent', null),
+                                                     ('Cancelled', null), ('Closed - Testing', null), ('Draft', null),
+                                                     (null, null), ('Pending', null)) t(s, c)""").df()
     assert dict(zip(got.s.fillna("NULL"), got.u)) == {
         "Closed": False, "In Progress": True, "Email Sent": True, "Cancelled": False,
         "Closed - Testing": False, "Draft": False, "NULL": False, "Pending": True}
+
+
+def test_open_status_with_a_close_date_is_a_conflict_not_unresolved(cleaned):
+    sql = clean.unresolved_sql("s", "c")
+    con, src = cleaned
+    assert not con.sql(f"select {sql} from (values ('Pending', timestamp '2010-01-02')) t(s, c)").fetchone()[0]
+    assert _count(cleaned, "unresolved and closed is not null") == 0
+    assert _count(cleaned, "status_conflict and closed_before_created") > 0
+
+
+def _batches(tmp_path, numbers, days_per_file=2):
+    """Date-ordered batch files: file k holds 50 rows on each of its days, starting 2015-01-01."""
+    import duckdb
+    part = tmp_path / "raw.parquet"
+    sel = " union all ".join(
+        f"select '311_batch_{k:04d}.json' as _file, strftime(timestamp '2015-01-01' + "
+        f"to_days(cast({(k - 1) * days_per_file} + i % {days_per_file} as integer)), '%Y-%m-%dT%H:%M:%S.000') "
+        f"as created_date from range({50 * days_per_file}) t(i)" for k in numbers)
+    duckdb.sql(f"copy ({sel}) to '{part.as_posix()}' (format parquet)")
+    manifest = pd.DataFrame({"file": [f"311_batch_{k:04d}.json" for k in numbers], "parse_ok": True})
+    return f"read_parquet('{part.as_posix()}')", manifest
+
+
+def test_a_cluster_of_missing_batches_at_the_end_flags_the_whole_tail(tmp_path):
+    import duckdb
+    raw, manifest = _batches(tmp_path, [k for k in range(1, 13) if k not in (8, 10, 11)])
+    days = clean.incomplete_days(duckdb.connect(), raw, manifest)
+    # file 7 covers Jan 13-14 (lower median Jan 13); file 12 ends Jan 24: everything after Jan 13 is flagged
+    assert {dt.date(2015, 1, d) for d in range(14, 25)} <= days
+    assert dt.date(2015, 1, 12) not in days and dt.date(2015, 1, 13) not in days
+
+
+def test_one_missing_batch_near_the_end_flags_only_its_gap(tmp_path):
+    import duckdb
+    raw, manifest = _batches(tmp_path, [k for k in range(1, 13) if k != 11])
+    days = clean.incomplete_days(duckdb.connect(), raw, manifest)
+    assert dt.date(2015, 1, 21) in days  # file 11's days, between the medians of files 10 and 12
+    assert dt.date(2015, 1, 17) not in days
+
+
+def test_full_years_need_every_day_in_the_span_and_none_flagged():
+    import duckdb
+    src = """(select timestamp '2010-01-01' + to_days(cast(i as integer)) as created, false as out_of_file_order,
+                    i between 14 and 17 as possibly_incomplete_day from range(1277) t(i))"""
+    assert clean.full_years(duckdb.connect(), src) == [2011, 2012]  # 2010 has flagged days; 2013 ends Jun 30
 
 
 def test_shared_cleaned_fixture_has_the_clean_table(cleaned_cfg):

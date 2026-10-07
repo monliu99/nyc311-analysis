@@ -52,3 +52,24 @@ TEST_STATUSES = ["Closed - Testing", "Draft"]
 CLOSED_STATUSES = ["Closed"]
 NOT_UNRESOLVED_STATUSES = ["Cancelled"]
 LONG_DURATION_HOURS = 365 * 24  # closed more than a year after opening
+# Unresolved also requires no close date: a request with an open status but a (valid) close date is a
+# status_conflict (mostly DOT "Pending" rows closed before they were opened), counted neither open nor closed.
+
+# A run of missing batch numbers at the end of the pull: from the earliest missing number g with at least
+# SPARSE_TAIL_MIN_MISSING numbers missing in [g, last] and at least this share of [g, last] missing, every later
+# day is possibly incomplete (neighboring files there overlap, so gaps between them can't be dated one by one).
+SPARSE_TAIL_MISSING_SHARE = 0.1
+SPARSE_TAIL_MIN_MISSING = 3
+
+# ---- Analysis sets shared by every question, so totals agree across the report ----
+BASE_SQL = "not is_test and not dup_key"
+# Complaints: minus information requests and rows that are not service requests (taxonomy category
+# "Invalid entries": test records and web-form probes; must equal taxonomy.INVALID).
+INVALID_CATEGORY = "Invalid entries"
+COMPLAINTS_SQL = (f"{BASE_SQL} and not coalesce(is_info_request, false) "
+                  f"and coalesce(category, '') <> '{INVALID_CATEGORY}'")
+# Instant closure: closed at the second of opening, with a time of day (a date-only row closed the same date at
+# midnight may be a same-day closure, so it is kept).
+INSTANT_SQL = "closed_at_creation and not date_only_created"
+# Typical seasonal and weekly profiles use full years up to this one; the pandemic years are shown separately.
+PROFILE_LAST_YEAR = 2019
