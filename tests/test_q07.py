@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from nyc311 import q07_geography as q7
+from nyc311 import rules
 from nyc311.clean import clean_glob
 
 
@@ -23,10 +24,22 @@ def test_district_rates_and_housing_split():
                          "median_hh_income": [100000, 30000], "puma_2010": ["1", "2"]})
     counts = pd.DataFrame({"boro_cd": [101, 101, 201, 201], "category": ["Noise", "Heat & hot water"] * 2,
                            "n": [30, 10, 40, 160]})
-    d = q7.district_table(counts, demo, q7.person_years(demo, 365.25, 0)).set_index("boro_cd")
+    d = q7.district_table(counts, demo, q7.person_years(demo, 365.25, 0), years=1.0).set_index("boro_cd")
     assert d.loc[101, "rate"] == pytest.approx(40.0) and d.loc[201, "rate"] == pytest.approx(100.0)
     assert d.loc[201, "housing_rate"] == pytest.approx(80.0) and d.loc[201, "housing_share_pct"] == pytest.approx(80)
     assert d.loc[201, "top_category"] == "Heat & hot water" and d.loc[101, "top_category"] == "Noise"
+    assert d.loc[201, "residents"] == pytest.approx(2000)
+    assert not d.commuter.any()
+
+
+def test_commuter_districts_are_flagged():
+    assert 105 in q7.COMMUTER_CDS   # Midtown: few residents, many workers
+    demo = pd.DataFrame({"boro_cd": [105, 108], "borough": "Manhattan", "cd_number": [5, 8], "cd_name": ["M", "U"],
+                         "population_2010": [50, 200], "population_2020": [50, 200],
+                         "median_hh_income": [90000, 100000], "puma_2010": ["a", "b"]})
+    counts = pd.DataFrame({"boro_cd": [105, 108], "category": ["Noise", "Noise"], "n": [100, 100]})
+    d = q7.district_table(counts, demo, q7.person_years(demo, 365.25, 0)).set_index("boro_cd")
+    assert d.loc[105, "commuter"] and not d.loc[108, "commuter"]
 
 
 def test_housing_share_of_the_gap():
@@ -53,16 +66,24 @@ def test_pumas_pool_districts_that_share_one_income_value():
     assert p.loc["03810", "districts"] == "101, 102" and p.loc["03809", "housing_rate"] == pytest.approx(400.0)
 
 
-def _synthetic_districts(k=12):
+def _synthetic_districts(k=12, commuter_rate=None):
     rng = np.random.default_rng(3)
     d = pd.DataFrame({"boro_cd": 200 + np.arange(1, k + 1), "borough": "Bronx", "cd_number": np.arange(1, k + 1),
                       "cd_name": [f"Area {i}" for i in range(1, k + 1)], "person_years": 1000.0,
-                      "population": 1000, "puma_2010": [f"p{i}" for i in range(k)],
+                      "residents": 1000.0, "puma_2010": [f"p{i}" for i in range(k)],
                       "median_hh_income": np.linspace(20000, 120000, k)})
     d["n_housing"] = np.linspace(400, 20, k).round()
     d["n"] = d.n_housing + rng.integers(100, 120, k)
+    d["commuter"] = False
+    if commuter_rate is not None:   # a small district with many complaints and almost no housing ones
+        extra = pd.DataFrame({"boro_cd": [105], "borough": ["Manhattan"], "cd_number": [5], "cd_name": ["Midtown"],
+                              "person_years": [100.0], "residents": [100.0], "puma_2010": ["pm"],
+                              "median_hh_income": [90000.0], "n_housing": [2.0], "n": [commuter_rate / 10],
+                              "commuter": [True]})
+        d = pd.concat([d, extra], ignore_index=True)
     d["rate"], d["housing_rate"] = 1000 * d.n / d.person_years, 1000 * d.n_housing / d.person_years
     d["other_rate"] = d.rate - d.housing_rate
+    d["housing_share_pct"] = 100 * d.n_housing / d.n
     return d
 
 
@@ -72,11 +93,48 @@ def test_insights_are_built_from_the_numbers_they_quote():
     facts = q7.insight_facts(d, q7.puma_units(d), k=3)
     assert facts["top_name"] == f"{top.borough} {top.cd_number} ({top.cd_name})"
     assert facts["ratio"] == pytest.approx(top.rate / bottom.rate)
+    assert facts["ratio_all"] == pytest.approx(facts["ratio"])     # no commuter district: one spread
     texts = q7.insights(facts)
     assert len(texts) == 3
     assert f"{facts['ratio']:.1f}" in texts[0] and facts["top_name"] in texts[0]
-    assert f"{facts['gap_housing_pct']:.0f}%" in texts[1]
+    assert f"accounts for {facts['gap_housing_pct']:.0f}%" in texts[1]
+    assert "drive" not in texts[1].lower()                         # an accounting split, not a cause
     assert f"{facts['inc_low_housing']:,.0f}" in texts[2]
+
+
+def test_spread_is_given_with_and_without_the_commuter_district():
+    d = _synthetic_districts(commuter_rate=5000.0)
+    res = d[~d.commuter]
+    facts = q7.insight_facts(d, q7.puma_units(res), k=3,
+                             commuter_types={105: [("Taxi Complaint", 30.0), ("Meter", 20.0)]})
+    assert facts["ratio_all"] == pytest.approx(d.rate.max() / d.rate.min())
+    assert facts["ratio"] == pytest.approx(res.rate.max() / res.rate.min())
+    assert facts["ratio_all"] > facts["ratio"]
+    assert "Midtown" not in facts["top_name"]                      # rankings leave the commuter district out
+    top3 = res.nlargest(3, "rate")
+    assert facts["top_n_share"] == pytest.approx(100 * top3.n.sum() / res.n.sum())
+    assert len(facts["commuters"]) == 1 and facts["commuters"][0]["rate"] == pytest.approx(5000.0)
+    texts = q7.insights(facts)
+    assert q7.COMMUTER_LABEL in texts[0] and "Taxi Complaint" in texts[0]
+    assert f"{facts['ratio_all']:.1f}" in texts[0] and f"{facts['ratio']:.1f}" in texts[0]
+
+
+def test_labels_never_overlap_even_when_anchors_coincide():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 10)
+    items = [(5, 5, "Manhattan 12\n405"), (5.1, 5, "Bronx 5\n356"), (5, 5.1, "Bronx 7\n355"), (1, 9, "Far\n1")]
+    boxes = q7.place_labels(fig, ax, items)
+    assert len(boxes) == len(items)
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            assert not boxes[i].overlaps(boxes[j]), (i, j)
+    frame = ax.get_window_extent()
+    assert all(frame.x0 <= b.x0 and b.x1 <= frame.x1 and frame.y0 <= b.y0 and b.y1 <= frame.y1 for b in boxes)
+    plt.close(fig)
 
 
 # ------------------------------------------------------------------ the module on the sample
@@ -98,18 +156,26 @@ def test_all_59_districts_have_positive_rates(q7_out):
     assert d.rate.between(1, 100_000).all()
     assert d.housing_share_pct.between(0, 100).all()
     assert np.allclose(d.rate, 1000 * d.n / d.person_years)
+    assert set(d.boro_cd[d.commuter]) == set(q7.COMMUTER_CDS)
 
 
 def test_exclusions_reconcile_to_the_default_set(q7_out, con_src):
     con, src = con_src
     ex = q7_out["exclusions"].set_index("step")
-    default = con.sql(f"select count(*) from {src} where not is_test and not dup_key").fetchone()[0]
+    default = con.sql(f"select count(*) from {src} where {rules.BASE_SQL}").fetchone()[0]
     assert ex.loc["default analysis set", "rows"] == default
     assert ex.rows.iloc[1:].sum() == default
     assert ex.loc["mapped to a community district", "rows"] == q7_out["districts"].n.sum()
-    special = con.sql(f"""select count(*) from {src} where not is_test and not dup_key and special_area_cd is not null
-                          and not coalesce(is_info_request, false) and not possibly_incomplete_day""").fetchone()[0]
+    complaints = con.sql(f"select count(*) from {src} where {rules.COMPLAINTS_SQL}").fetchone()[0]
+    assert default - ex.rows.iloc[1:3].sum() == complaints      # info requests, then "Invalid entries"
+    days = """(select created::date from {src} where {base} and created is not null group by 1
+               having bool_or(not out_of_file_order) and not bool_or(possibly_incomplete_day))"""
+    special = con.sql(f"""select count(*) from {src} where {rules.COMPLAINTS_SQL} and special_area_cd is not null
+                          and created::date in {days.format(src=src, base=rules.BASE_SQL)}""").fetchone()[0]
     assert ex.loc["park or airport (special_area_cd)", "rows"] == special
+    mapped = con.sql(f"""select count(*) from {src} where {rules.COMPLAINTS_SQL} and boro_cd is not null
+                         and created::date in {days.format(src=src, base=rules.BASE_SQL)}""").fetchone()[0]
+    assert ex.loc["mapped to a community district", "rows"] == mapped
     assert ex.pct.between(0, 100).all()
 
 
@@ -125,10 +191,13 @@ def test_borough_table_sums_the_districts(q7_out):
 def test_insights_compare_extremes_on_the_sample(q7_out):
     f = q7_out["facts"]
     d = q7_out["districts"]
-    assert f["ratio"] == pytest.approx(d.rate.max() / d.rate.min())
+    res = d[~d.commuter]
+    assert f["ratio_all"] == pytest.approx(d.rate.max() / d.rate.min())
+    assert f["ratio"] == pytest.approx(res.rate.max() / res.rate.min())
     assert f["ratio"] > 1
     assert 0 < f["top_pop_share"] < 100 and f["top_n_share"] > f["top_pop_share"]
     assert len(q7_out["insights"]) == 3
+    assert q7_out["pumas"].puma_2010.nunique() == d.puma_2010.nunique()   # commuter PUMA kept via its neighbor
 
 
 def test_outputs_written(q7_out, cleaned_cfg):
@@ -139,8 +208,13 @@ def test_outputs_written(q7_out, cleaned_cfg):
         assert (out / "agg" / name).exists()
     text = (out / "answers" / "q07.md").read_text()
     assert text.startswith("# Q7")
+    lines = [x for x in text.splitlines() if x.strip()]
+    n = int(q7_out["districts"].n.sum())
+    assert re.fullmatch(rf"\*Computed by `nyc311/q07_geography\.py` from {n:,} complaints, .+\.\*", lines[1])
+    assert "write the prose" not in text and "Drafted" not in text
     assert "![" in text and "(figs/q07_district_map.png)" in text
     assert not re.search(r"\bnan\b", text, re.IGNORECASE)
     for insight in q7_out["insights"]:
         assert insight in text
+    assert q7.COMMUTER_LABEL in text
     assert (out / "reports" / "q07_geography.txt").read_text().startswith("===== BEGIN q07_geography =====")

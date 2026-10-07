@@ -1,10 +1,14 @@
 """Q7: where complaints concentrate. Complaints per 1,000 residents a year by community district, the category
 mix behind the gaps, and the link to median household income.
 
-Rates divide complaints by resident-years: 2010 Census population for days in 2010-2014 and 2020 Census
+Complaints are rules.COMPLAINTS_SQL rows (default analysis set minus information requests and "Invalid entries")
+opened on complete days (a date with in-order rows and no possibly_incomplete_day flag): the same set as Q8 and
+Q9. Rates divide complaints by resident-years: 2010 Census population for days in 2010-2014 and 2020 Census
 population for days from 2015 on, summed over the complete days in the data. Parks/airports (special_area_cd)
-and complaints with no district are excluded and reported. The choropleth is drawn with matplotlib patches from
-the DCP GeoJSON (no geopandas). The three insights in the figure and in outputs/answers/q07.md are f-strings
+and complaints with no district are excluded and reported. Commuter districts (COMMUTER_CDS) are mapped and
+listed, but a per-resident rate is not comparable there, so rankings, top/bottom groups and income comparisons
+leave them out, and the spread is given with and without them. The choropleth is drawn with matplotlib patches
+from the DCP GeoJSON (no geopandas). The three insights in the figure and in outputs/answers/q07.md are f-strings
 over computed values; the same code runs on one month or twelve years.
 """
 from __future__ import annotations
@@ -18,6 +22,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import PathPatch, Rectangle
 from matplotlib.path import Path as MplPath
+from matplotlib.text import Text
 
 from nyc311 import geo, rules
 from nyc311 import nytplot as nyt
@@ -33,13 +38,31 @@ TOP_K = 10                  # "top" and "bottom" district groups in the insights
 N_CLASSES = 5               # map classes: quintiles of the 59 districts
 MIN_N = 100                 # districts with fewer complaints are hatched on the map and flagged in tables
 INCOME_GROUPS = 5           # income fifths of PUMAs
+TOP_TYPES = 3               # complaint types named for a commuter district
 HATCH_GRAY = "#a6a6a6"
 MAP_LAT = 40.7              # aspect correction for lon/lat
+# Districts whose complaints come largely from people who work or visit there: Manhattan 5 (Midtown Business
+# District) has about 60,000 residents (2010 and 2020 Census) but is the city's main office district, so
+# complaints per resident are not comparable with residential districts. A design choice from outside the 311
+# data (like the population counts), not a result; its numbers are still computed and shown.
+COMMUTER_CDS = (105,)
+COMMUTER_LABEL = "commuter district"
+# Exclusion steps after the default analysis set, in order: (label, column of the grouped table in district_counts)
+WATERFALL = [
+    ("information requests (is_info_request)", "info"),
+    (f"category '{rules.INVALID_CATEGORY}'", "invalid"),
+    ("no valid created date", "nodate"),
+    ("dates with only out_of_file_order rows (outside the files' period)", "outside"),
+    ("possibly_incomplete_day", "inc"),
+    ("park or airport (special_area_cd)", "special"),
+    ("no community district", "no_cd"),
+]
+MAPPED = "mapped to a community district"
 
 
 # ------------------------------------------------------------------ pure functions
 def load_demographics(path=DEMO_CSV):
-    return pd.read_csv(path, dtype={"puma_2010": str})
+    return pd.read_csv(path, dtype={"puma_2010": str, "puma_shared_with": str})
 
 
 def person_years(demo, days_2010, days_2020):
@@ -48,8 +71,9 @@ def person_years(demo, days_2010, days_2020):
     return (d.population_2010 * days_2010 + d.population_2020 * days_2020) / DAYS_PER_YEAR
 
 
-def district_table(counts, demo, py):
-    """One row per district: complaints, housing complaints, rates per 1,000 residents a year, top category."""
+def district_table(counts, demo, py, years=None):
+    """One row per district: complaints, housing complaints, rates per 1,000 residents a year, top category.
+    years (length of the period in years) gives `residents`, the average population over the period."""
     tot = counts.groupby("boro_cd").n.sum()
     hous = counts[counts.category.isin(HOUSING)].groupby("boro_cd").n.sum()
     top = counts.sort_values("n", ascending=False).drop_duplicates("boro_cd").set_index("boro_cd")
@@ -58,6 +82,7 @@ def district_table(counts, demo, py):
     d["n"] = tot.reindex(d.index).fillna(0).astype(int)
     d["n_housing"] = hous.reindex(d.index).fillna(0).astype(int)
     d["person_years"] = py.reindex(d.index)
+    d["residents"] = d.person_years / years if years else np.nan
     d["rate"] = 1000 * d.n / d.person_years
     d["housing_rate"] = 1000 * d.n_housing / d.person_years
     d["other_rate"] = d.rate - d.housing_rate
@@ -65,6 +90,7 @@ def district_table(counts, demo, py):
     d["top_category"] = top.category.reindex(d.index)
     d["top_category_pct"] = 100 * top.n.reindex(d.index) / d.n.where(d.n > 0)
     d["low_n"] = d.n < MIN_N
+    d["commuter"] = d.index.isin(COMMUTER_CDS)
     return d.reset_index()
 
 
@@ -107,16 +133,31 @@ def _name(r):
     return f"{r.borough} {r.cd_number} ({r.cd_name})"
 
 
-def insight_facts(d, p, k=TOP_K, counts=None):
-    """Every number the three insights quote, computed from the district and PUMA tables."""
-    top, bottom = d.loc[d.rate.idxmax()], d.loc[d.rate.idxmin()]
-    topk, botk = d.nlargest(k, "rate"), d.nsmallest(k, "rate")
+def _residential(d):
+    return d[~d.commuter] if "commuter" in d else d
+
+
+def insight_facts(d, p, k=TOP_K, counts=None, commuter_types=None):
+    """Every number the three insights quote. Rankings and top/bottom groups use districts that are not commuter
+    districts; ratio_all is the spread over every district. p: PUMA table (already without commuter districts)."""
+    r = _residential(d)
+    top, bottom = r.loc[r.rate.idxmax()], r.loc[r.rate.idxmin()]
+    topk, botk = r.nlargest(k, "rate"), r.nsmallest(k, "rate")
     gt, gb = _group_rates(topk), _group_rates(botk)
     boro = topk.borough.value_counts()
-    f = {"k": k, "n_districts": len(d), "top_name": _name(top), "top_rate": top.rate, "bottom_name": _name(bottom),
-         "bottom_rate": bottom.rate, "ratio": top.rate / bottom.rate,
-         "top_pop_share": 100 * topk.person_years.sum() / d.person_years.sum(),
-         "top_n_share": 100 * topk.n.sum() / d.n.sum(), "top_boro": boro.index[0], "top_boro_count": int(boro.iloc[0]),
+    commuters = []
+    for c in d[d.commuter].itertuples() if "commuter" in d else []:
+        commuters.append({"boro_cd": int(c.boro_cd), "name": _name(c), "short": f"{c.borough} {c.cd_number}",
+                          "rate": float(c.rate), "residents": float(getattr(c, "residents", np.nan)),
+                          "housing_share": float(c.housing_share_pct),
+                          "rank": int((d.rate > c.rate).sum()) + 1,
+                          "types": list((commuter_types or {}).get(int(c.boro_cd), []))})
+    f = {"k": k, "n_districts": len(d), "n_rated": len(r), "top_name": _name(top), "top_rate": top.rate,
+         "top_short": f"{top.borough} {top.cd_number}", "top_housing": top.housing_share_pct,
+         "bottom_name": _name(bottom), "bottom_rate": bottom.rate, "ratio": top.rate / bottom.rate,
+         "ratio_all": d.rate.max() / d.rate.min(), "commuters": commuters,
+         "top_pop_share": 100 * topk.person_years.sum() / r.person_years.sum(),
+         "top_n_share": 100 * topk.n.sum() / r.n.sum(), "top_boro": boro.index[0], "top_boro_count": int(boro.iloc[0]),
          "rate_top": gt["rate"], "rate_bot": gb["rate"], "h_top": gt["housing_share"], "h_bot": gb["housing_share"],
          "other_top": gt["rate"] - gt["housing_rate"], "other_bot": gb["rate"] - gb["housing_rate"],
          "gap_housing_pct": gap_share(gt, gb), "gap_cats": []}
@@ -140,18 +181,37 @@ def insight_facts(d, p, k=TOP_K, counts=None):
     return f
 
 
+def _types_text(types):
+    return ", ".join(f"{t} {pct:.0f}%" for t, pct in types[:TOP_TYPES])
+
+
+def commuter_sentence(c, f):
+    """One sentence on a commuter district: its rate, residents, top complaint types, and the spread with it."""
+    types = _types_text(c["types"])
+    who = (f"{c['residents'] / 1000:,.1f}k residents" if np.isfinite(c["residents"]) else "few residents") + (
+        f"; top complaints {types}" if types else "")
+    extreme = abs(f["ratio_all"] - f["ratio"]) > 1e-9
+    return (f"{c['name']} is a {COMMUTER_LABEL} ({who}): its {c['rate']:,.0f} complaints per 1,000 residents "
+            + (f"would make the spread {f['ratio_all']:.1f}-fold, but are" if extreme else "are")
+            + " not comparable with where people live, so it is left out of the rankings.")
+
+
 def insights(f):
     """The three insights for the Mayor, as text built only from insight_facts()."""
     one = (f"{f['top_name']} files {f['top_rate']:,.0f} complaints per 1,000 residents a year, {f['ratio']:.1f}x "
-           f"{f['bottom_name']}, the lowest at {f['bottom_rate']:,.0f}. The {f['k']} highest-rate districts hold "
-           f"{f['top_pop_share']:.0f}% of residents but {f['top_n_share']:.0f}% of complaints; "
-           f"{f['top_boro_count']} of the {f['k']} are in {_boro(f['top_boro'])}.")
-    two = (f"Housing drives the gap. Heat, hot water and housing-condition complaints are {f['h_top']:.0f}% of "
-           f"complaints in the top {f['k']} districts vs {f['h_bot']:.0f}% in the bottom {f['k']}, and account for "
-           f"{f['gap_housing_pct']:.0f}% of the gap in rates ({f['rate_top']:,.0f} vs {f['rate_bot']:,.0f} per "
-           f"1,000). All other complaints: {f['other_top']:,.0f} vs {f['other_bot']:,.0f}.")
+           f"{f['bottom_name']}, the lowest at {f['bottom_rate']:,.0f}. ")
+    one += "".join(commuter_sentence(c, f) + " " for c in f["commuters"])
+    one += (f"The {f['k']} highest-rate districts hold {f['top_pop_share']:.0f}% of residents but "
+            f"{f['top_n_share']:.0f}% of complaints; {f['top_boro_count']} of the {f['k']} are in "
+            f"{_boro(f['top_boro'])}.")
+    two = (f"Housing accounts for {f['gap_housing_pct']:.0f}% of the gap in rates between the {f['k']} highest- and "
+           f"{f['k']} lowest-rate districts ({f['rate_top']:,.0f} vs {f['rate_bot']:,.0f} per 1,000 a year): heat, hot "
+           f"water and housing-condition complaints are {f['h_top']:.0f}% of complaints in the top {f['k']} vs "
+           f"{f['h_bot']:.0f}% in the bottom {f['k']}. All other complaints: {f['other_top']:,.0f} vs "
+           f"{f['other_bot']:,.0f} per 1,000"
+           + ("; other complaints narrow the gap." if f["gap_housing_pct"] > 100 else "."))
     if f["gap_cats"]:
-        two += " Largest contributors: " + ", ".join(f"{c} {v:.0f}%" for c, v in f["gap_cats"]) + "."
+        two += " Shares of the gap by category: " + ", ".join(f"{c} {v:.0f}%" for c, v in f["gap_cats"]) + "."
     three = (f"Income. In the poorest fifth of the {f['n_units']} income areas (median household income up to "
              f"${f['inc_low_max'] / 1000:,.0f}k), residents file {f['inc_low_housing']:,.0f} housing complaints per "
              f"1,000 a year vs {f['inc_high_housing']:,.0f} in the richest fifth (${f['inc_high_min'] / 1000:,.0f}k "
@@ -160,56 +220,79 @@ def insights(f):
     return [one, two, three]
 
 
+def map_title(f):
+    extreme = [c for c in f["commuters"] if abs(f["ratio_all"] - f["ratio"]) > 1e-9]
+    if extreme:
+        return (f"311 complaints per resident vary {f['ratio']:.1f}-fold across {f['n_rated']} community districts "
+                f"({f['ratio_all']:.1f}-fold counting {COMMUTER_LABEL} {extreme[0]['short']})")
+    return f"311 complaints per resident vary {f['ratio_all']:.1f}-fold across {f['n_districts']} community districts"
+
+
 # ------------------------------------------------------------------ data
 def analysis_days(con, src):
     """Complete days: dates with at least one in-order row, minus possibly_incomplete_day."""
     days = con.sql(f"""select created::date as d, bool_or(not out_of_file_order) as covered,
                        bool_or(possibly_incomplete_day) as inc
-                       from {src} where not is_test and not dup_key and created is not null group by 1""").df()
+                       from {src} where {rules.BASE_SQL} and created is not null group by 1""").df()
     days["d"] = pd.to_datetime(days.d)
-    return days[days.covered & ~days.inc].d.sort_values().reset_index(drop=True)
+    return days[days.covered & ~days.inc.fillna(False).astype(bool)].d.sort_values().reset_index(drop=True)
 
 
-def district_counts(con, src, days):
-    con.register("q07_days", pd.DataFrame({"d": days}))
+def days_table(con, days, name):
+    """Temp table `name` (one column d, DATE) holding the analysis days."""
+    con.register(f"{name}_df", pd.DataFrame({"d": pd.to_datetime(pd.Series(days))}))
+    con.execute(f"create or replace temp table {name} as select distinct cast(d as date) as d from {name}_df")
+    con.unregister(f"{name}_df")
+    return name
+
+
+def district_counts(con, src):
+    """Complaints by district and category on complete days, the exclusion waterfall (WATERFALL) from the default
+    analysis set, and the complaints with no district (by reported borough)."""
     raw = con.sql(f"""
-        with b as (select created::date as d, coalesce(is_info_request, false) as info, possibly_incomplete_day as inc,
-                          boro_cd, special_area_cd is not null as special, borough,
-                          coalesce(category, '(unmapped)') as category
-                   from {src} where not is_test and not dup_key),
+        with b as (select created::date as d, coalesce(is_info_request, false) as info,
+                          coalesce(category, '') = '{rules.INVALID_CATEGORY}' as invalid,
+                          coalesce(possibly_incomplete_day, false) as inc, boro_cd,
+                          special_area_cd is not null as special, borough, coalesce(category, '(unmapped)') as category
+                   from {src} where {rules.BASE_SQL}),
         cov as (select distinct created::date as cd from {src}
-                where not is_test and not dup_key and not out_of_file_order and created is not null)
-        select b.d is null as nodate, cov.cd is not null as covered, info, inc, boro_cd, special, borough, category,
-               count(*)::bigint as n
+                where {rules.BASE_SQL} and not out_of_file_order and created is not null)
+        select b.d is null as nodate, cov.cd is null as outside, info, invalid, inc, special, boro_cd is null as no_cd,
+               boro_cd, borough, category, count(*)::bigint as n
         from b left join cov on b.d = cov.cd group by all""").df()
-    con.unregister("q07_days")
     default = int(raw.n.sum())
-    steps, keep = [("default analysis set", default)], raw
-
-    def drop(label, mask):
-        nonlocal keep
+    steps, keep, no_district = [("default analysis set", default)], raw, None
+    for label, col in WATERFALL:
+        mask = keep[col].astype(bool)
+        if col == "no_cd":
+            no_district = keep[mask]
         steps.append((label, int(keep.n[mask].sum())))
         keep = keep[~mask]
-
-    drop("information requests (is_info_request)", keep["info"])
-    drop("no valid created date", keep.nodate)
-    drop("dates with only out_of_file_order rows (outside the files' period)", ~keep.covered)
-    drop("possibly_incomplete_day", keep.inc)
-    drop("park or airport (special_area_cd)", keep.special)
-    no_cd = keep.boro_cd.isna()
-    no_district = keep[no_cd]
-    drop("no community district", no_cd)
-    steps.append(("mapped to a community district", int(keep.n.sum())))
+    steps.append((MAPPED, int(keep.n.sum())))
     ex = pd.DataFrame(steps, columns=["step", "rows"])
-    ex["pct"] = 100 * ex.rows / default
+    ex["pct"] = 100 * ex.rows / max(default, 1)
     counts = keep.assign(boro_cd=keep.boro_cd.astype(int)).groupby(["boro_cd", "category"], as_index=False).n.sum()
     return counts, ex, no_district
 
 
-def unknown_by_agency(con, src):
+def commuter_types(con, src, days_rel, cds=COMMUTER_CDS, top=TOP_TYPES):
+    """{boro_cd: [(canonical type, % of the district's complaints), ...]} for the commuter districts."""
+    if not cds:
+        return {}
+    t = con.sql(f"""select boro_cd, coalesce(canonical_type, '(unmapped)') as t, count(*)::bigint as n from {src}
+                    where {rules.COMPLAINTS_SQL} and boro_cd in ({', '.join(str(int(c)) for c in cds)})
+                    and created::date in (select d from {days_rel}) group by all""").df()
+    out = {}
+    for cd, g in t.groupby("boro_cd"):
+        g = g.sort_values(["n", "t"], ascending=[False, True])
+        out[int(cd)] = [(r.t, 100 * r.n / g.n.sum()) for r in g.head(top).itertuples()]
+    return out
+
+
+def unknown_by_agency(con, src, days_rel):
     return con.sql(f"""select agency, count(*)::bigint as n from {src}
-                       where not is_test and not dup_key and not coalesce(is_info_request, false)
-                       and not possibly_incomplete_day and boro_cd is null and special_area_cd is null
+                       where {rules.COMPLAINTS_SQL} and created::date in (select d from {days_rel})
+                       and boro_cd is null and special_area_cd is null
                        group by 1 order by n desc""").df()
 
 
@@ -224,8 +307,55 @@ def borough_table(d, no_district, demo):
     nd = no_district.assign(b=no_district.borough.map(up)).groupby("b").n.sum()
     b["n_with_borough_no_district"] = nd.reindex(b.index).fillna(0).astype(int)
     b["rate_incl_no_district"] = 1000 * (b.n + b.n_with_borough_no_district) / b.person_years
-    b["highest_district"] = d.loc[d.groupby("borough").rate.idxmax()].set_index("borough").cd_name
+    r = _residential(d)
+    b["highest_district"] = r.loc[r.groupby("borough").rate.idxmax()].set_index("borough").cd_name
     return b.sort_values("rate", ascending=False).reset_index()
+
+
+# ------------------------------------------------------------------ labels
+def place_labels(fig, ax, items, avoid=(), fontsize=8.5, **kw):
+    """Greedy label placement. items: (x, y, text) in data coordinates, in priority order. Each label goes at its
+    anchor if its box overlaps no label placed before and no `avoid` artist and stays inside the axes; otherwise at
+    the nearest free offset around the anchor, with a thin leader line. Returns the labels' display boxes."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    canvas = fig.canvas if hasattr(fig.canvas, "get_renderer") else FigureCanvasAgg(fig)
+    canvas.draw()   # resolves the constrained layout, so display coordinates are final
+    renderer = canvas.get_renderer()
+    frame = ax.get_window_extent(renderer)
+    taken = [(a.get_tightbbox(renderer) if hasattr(a, "get_tightbbox") else a.get_window_extent(renderer))
+             for a in avoid]
+    taken = [b for b in taken if b is not None]
+    dirs = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)]
+    cands = [(0.0, 0.0)] + [(r * dx, r * dy * 0.6) for r in (14, 24, 36, 50, 66, 84, 104) for dx, dy in dirs]
+    style = {"fontsize": fontsize, "fontfamily": nyt.SANS, "fontweight": "bold", "color": "#111111",
+             "path_effects": [pe.withStroke(linewidth=2.5, foreground="white")], **kw}
+    boxes = []
+    for x, y, text in items:
+        best = None
+        for dx, dy in cands:
+            ha = "center" if dx == 0 else "left" if dx > 0 else "right"
+            va = "center" if dy == 0 else "bottom" if dy > 0 else "top"
+            t = ax.annotate(text, (x, y), xytext=(dx, dy), textcoords="offset points", ha=ha, va=va, **style)
+            bb = t.get_window_extent(renderer)
+            t.remove()
+            pad = bb.expanded(1.06, 1.12)
+            inside = frame.x0 <= bb.x0 and bb.x1 <= frame.x1 and frame.y0 <= bb.y0 and bb.y1 <= frame.y1
+            score = 10 * sum(pad.overlaps(b) for b in taken) + 100 * (not inside)
+            if best is None or score < best[0]:
+                best = (score, dx, dy, ha, va)
+            if score == 0:
+                break
+        _, dx, dy, ha, va = best
+        arrow = ({"arrowstyle": "-", "color": "#666666", "lw": 0.7, "shrinkA": 1, "shrinkB": 0}
+                 if (dx, dy) != (0.0, 0.0) else None)
+        t = ax.annotate(text, (x, y), xytext=(dx, dy), textcoords="offset points", ha=ha, va=va, zorder=6,
+                        arrowprops=arrow, **style)
+        t.get_window_extent(renderer)              # places the text at its offset
+        bb = Text.get_window_extent(t, renderer)   # the text only (an Annotation's extent includes its leader)
+        taken.append(bb.expanded(1.06, 1.12))
+        boxes.append(bb)
+    return boxes
 
 
 # ------------------------------------------------------------------ figures
@@ -256,7 +386,19 @@ def _fig_text(s):
     return s.replace("$", r"\$")
 
 
-def fig_map(d, texts, path, note):
+def _label_picks(d):
+    """Districts labeled on the map: the three highest rates, the highest non-commuter one, the lowest, and every
+    commuter district."""
+    ranked = d.sort_values("rate", ascending=False)
+    picks = list(ranked.boro_cd.head(3))
+    r = _residential(d)
+    for b in [r.loc[r.rate.idxmax()].boro_cd, ranked.boro_cd.iloc[-1], *d.boro_cd[d.commuter]]:
+        if b not in picks:
+            picks.append(b)
+    return picks
+
+
+def fig_map(d, texts, path, note, title):
     nyt.use()
     fig = plt.figure(figsize=(13, 7.8))
     gs = fig.add_gridspec(1, 2, width_ratios=[1.35, 1])
@@ -265,6 +407,7 @@ def fig_map(d, texts, path, note):
     colors = ramp(len(edges) - 1)
     fill = dict(zip(d.boro_cd, [colors[c] for c in cls]))
     low = set(d.boro_cd[d.low_n])
+    commuter = set(d.boro_cd[d.commuter])
     parts = {}
     for code, outer, holes, lo, hi in geo.load_polygons():
         shape = polygon_path(outer, holes)
@@ -272,18 +415,14 @@ def fig_map(d, texts, path, note):
         hatch = "...." if code not in fill else "////" if code in low else None
         if hatch:  # overlay so the hatch can be gray while district borders stay white
             ax.add_patch(PathPatch(shape, facecolor="none", edgecolor=HATCH_GRAY, lw=0, hatch=hatch))
+        if code in commuter:
+            ax.add_patch(PathPatch(shape, facecolor="none", edgecolor="#111111", lw=1.0, zorder=3))
         area = abs(_area(outer.vertices))
         if area > parts.get(code, (0, None))[0]:
             parts[code] = (area, outer.vertices.mean(axis=0))
     ax.autoscale_view()
     ax.set_aspect(1 / np.cos(np.radians(MAP_LAT)))
     ax.axis("off")
-    ranked = d.sort_values("rate", ascending=False)
-    for r in list(ranked.head(3).itertuples()) + [ranked.iloc[-1]]:
-        x, y = parts[r.boro_cd][1]
-        ax.text(x, y, f"{r.borough} {r.cd_number}\n{r.rate:,.0f}", ha="center", va="center", fontsize=8.5,
-                fontfamily=nyt.SANS, fontweight="bold", color="#111111",
-                path_effects=[pe.withStroke(linewidth=2.5, foreground="white")])
     key = ax.inset_axes([0.02, 0.90, 0.46, 0.03])
     for i, c in enumerate(colors):
         key.add_patch(Rectangle((i, 0), 1, 1, color=c))
@@ -297,25 +436,31 @@ def fig_map(d, texts, path, note):
     key.grid(False)
     key.set_title("Complaints per 1,000 residents a year (district fifths)", loc="left", fontsize=9.5,
                   fontfamily=nyt.SANS)
-    ax.add_patch(Rectangle((0.80, 0.06), 0.035, 0.03, transform=ax.transAxes, facecolor="white",
-                           edgecolor=HATCH_GRAY, lw=0.5, hatch="...."))
-    ax.text(0.845, 0.075, "Parks & airports\n(not rated)", transform=ax.transAxes, va="center", fontsize=8.5,
-            color=nyt.NOTE_GRAY)
+    swatch = ax.add_patch(Rectangle((0.80, 0.06), 0.035, 0.03, transform=ax.transAxes, facecolor="white",
+                                    edgecolor=HATCH_GRAY, lw=0.5, hatch="...."))
+    parks = ax.text(0.845, 0.075, "Parks & airports\n(not rated)", transform=ax.transAxes, va="center",
+                    fontsize=8.5, color=nyt.NOTE_GRAY)
     tx.axis("off")
     tx.text(0, 1, "Three insights for the Mayor", fontfamily=nyt.SANS, fontweight="bold", fontsize=13, va="top")
     y = 0.93
     for i, t in enumerate(texts, 1):
         tx.text(0, y, str(i), fontfamily=nyt.SANS, fontweight="bold", fontsize=15, color=nyt.CORAL.line, va="top")
-        body = textwrap.fill(_fig_text(t), 52)
-        tx.text(0.07, y, body, fontsize=10.5, va="top", linespacing=1.35)
-        y -= 0.04 * (body.count("\n") + 1) + 0.035
-    nyt.title(fig, f"311 complaints per resident vary {d.rate.max() / d.rate.min():.1f}-fold across "
-                   f"{len(d)} community districts")
+        body = textwrap.fill(_fig_text(t), 56)
+        tx.text(0.07, y, body, fontsize=10, va="top", linespacing=1.3)
+        y -= 0.036 * (body.count("\n") + 1) + 0.03
+    nyt.title(fig, title)
     nyt.note(fig, textwrap.fill(note, 175))
+    rows = d.set_index("boro_cd")
+    items = []
+    for b in _label_picks(d):
+        r = rows.loc[b]
+        tag = f", {COMMUTER_LABEL}" if r.commuter else ""
+        items.append((*parts[b][1], f"{r.borough} {r.cd_number}\n{r.rate:,.0f}{tag}"))
+    place_labels(fig, ax, items, avoid=[key, swatch, parks])
     return nyt.save(fig, path)
 
 
-def fig_district_rates(d, city_rate, path, period):
+def fig_district_rates(d, city_rate, path, period, f):
     nyt.use()
     order = d.groupby("borough").rate.apply(lambda s: 1000 * d.loc[s.index, "n"].sum() /
                                             d.loc[s.index, "person_years"].sum()).sort_values(ascending=False)
@@ -328,9 +473,13 @@ def fig_district_rates(d, city_rate, path, period):
         y = np.arange(len(s))
         ax.barh(y, s.housing_rate, color=nyt.CORAL.line, height=0.72)
         ax.barh(y, s.other_rate, left=s.housing_rate, color=nyt.SAGE.band, height=0.72)
+        for yi, r in zip(y, s.itertuples()):
+            if r.commuter:
+                ax.text(r.housing_rate + 0.01 * xmax, yi, f"{COMMUTER_LABEL}: per-resident rate not comparable",
+                        va="center", fontsize=8.5, fontfamily=nyt.SANS, color="#333333")
         ax.set_yticks(y)
         ax.set_yticklabels([f"{r.cd_number} {textwrap.shorten(r.cd_name, 30, placeholder='...')}"
-                            for r in s.itertuples()], fontsize=9)
+                            + (" *" if r.commuter else "") for r in s.itertuples()], fontsize=9)
         ax.axvline(city_rate, color=nyt.NOTE_GRAY, lw=0.8, ls=(0, (3, 3)), zorder=0)
         ax.grid(axis="x")
         ax.grid(axis="y", visible=False)
@@ -347,15 +496,19 @@ def fig_district_rates(d, city_rate, path, period):
                fontfamily=nyt.SANS, fontweight="bold", fontsize=10)
     first.text(city_rate, 1.0, f" citywide {city_rate:,.0f}", transform=first.get_xaxis_transform(), va="bottom",
                fontsize=8.5, color=nyt.NOTE_GRAY)
-    top = d.loc[d.rate.idxmax()]
-    nyt.title(fig, f"Complaints per 1,000 residents a year: {top.borough} {top.cd_number} leads at {top.rate:,.0f}, "
-                   f"{100 * top.n_housing / top.n:.0f}% of it housing")
+    title = (f"Complaints per 1,000 residents a year: {f['top_short']} leads at {f['top_rate']:,.0f}, "
+             f"{f['top_housing']:.0f}% of it housing")
+    if f["commuters"]:
+        title += " (" + ", ".join(f"{COMMUTER_LABEL} {c['short']}, {c['rate']:,.0f}, not ranked"
+                                  for c in f["commuters"]) + ")"
+    nyt.title(fig, textwrap.fill(title, 100))
+    star = (f" * {COMMUTER_LABEL}: many workers and visitors, few residents." if f["commuters"] else "")
     nyt.note(fig, f"Note: {period}; boroughs ordered by rate, districts within each by rate. Dashed line: citywide "
-                  "rate for the 59 districts.")
+                  f"rate for the {len(d)} districts.{star}")
     return nyt.save(fig, path)
 
 
-def fig_income(p, f, path, period):
+def fig_income(p, f, path, period, excluded):
     nyt.use()
     fig, axes = plt.subplots(2, 1, figsize=(7.5, 7), sharex=True)
     x = p.median_hh_income / 1000
@@ -370,8 +523,9 @@ def fig_income(p, f, path, period):
     nyt.format_x(axes[1], prefix="$", suffix="k", nbins=6)
     nyt.title(fig, f"Poorest fifth of areas: {f['inc_low_housing']:,.0f} housing complaints per 1,000 vs "
                    f"{f['inc_high_housing']:,.0f} in the richest")
+    left_out = (f" {excluded} ({COMMUTER_LABEL}) left out; its PUMA partner stands alone." if excluded else "")
     nyt.note(fig, textwrap.fill(
-        f"Note: each dot is one of {len(p)} PUMAs (59 districts; 4 pairs share a PUMA and are pooled). Median "
+        f"Note: each dot is one of {len(p)} PUMAs (districts sharing a PUMA are pooled).{left_out} Median "
         f"household income: ACS 2010-2014, 2014 dollars. Complaints: {period}.", 105))
     return nyt.save(fig, path)
 
@@ -382,25 +536,29 @@ def run(cfg):
     src = clean_glob(cfg)
     demo = load_demographics()
     days = analysis_days(con, src)
+    days_rel = days_table(con, days, "q07_days")
     n_2020 = int((days.dt.year >= POP_2020_FROM_YEAR).sum())
     n_2010 = len(days) - n_2020
     py = person_years(demo, n_2010, n_2020)
-    counts, ex, no_district = district_counts(con, src, days)
-    d = district_table(counts, demo, py)
+    counts, ex, no_district = district_counts(con, src)
+    d = district_table(counts, demo, py, years=len(days) / DAYS_PER_YEAR)
     boroughs = borough_table(d, no_district, demo)
-    pumas = puma_units(d)
-    facts = insight_facts(d, pumas, counts=counts)
+    pumas = puma_units(_residential(d))
+    ctypes = commuter_types(con, src, days_rel)
+    facts = insight_facts(d, pumas, counts=counts, commuter_types=ctypes)
     texts = insights(facts)
-    unknown = unknown_by_agency(con, src)
+    unknown = unknown_by_agency(con, src, days_rel)
     period = f"{days.min():%Y-%m-%d} to {days.max():%Y-%m-%d}"
-    pops = ", ".join(x for x in [f"2010 Census for {n_2010:,} days in 2010-{POP_2020_FROM_YEAR - 1}" if n_2010 else "",
+    pops = ", ".join(x for x in [f"2010 Census for {n_2010:,} days before {POP_2020_FROM_YEAR}" if n_2010 else "",
                                  f"2020 Census for {n_2020:,} days from {POP_2020_FROM_YEAR}" if n_2020 else ""] if x)
     exi = ex.set_index("step")
+    commuters = ", ".join(c["short"] for c in facts["commuters"])
     note = (f"Note: {int(d.n.sum()):,} complaints with a community district, {period} ({len(days):,} complete days); "
             f"population: {pops}. Not rated: parks and airports "
             f"{exi.loc['park or airport (special_area_cd)', 'pct']:.1f}% and no district "
-            f"{exi.loc['no community district', 'pct']:.1f}% of rows; information requests excluded. Sources: NYC "
-            "311; NYC DCP districts and Census counts; ACS 2010-2014 income.")
+            f"{exi.loc['no community district', 'pct']:.1f}% of rows; information requests excluded."
+            + (f" Outlined: {commuters}, a {COMMUTER_LABEL} (not ranked)." if commuters else "")
+            + " Sources: NYC 311; NYC DCP districts and Census counts; ACS 2010-2014 income.")
     city_rate = 1000 * d.n.sum() / d.person_years.sum()
 
     agg, figs = cfg.out_dir / "agg", cfg.out_dir / "figs"
@@ -410,16 +568,16 @@ def run(cfg):
     ex.to_csv(agg / "q07_exclusions.csv", index=False)
     pumas.to_csv(agg / "q07_pumas.csv", index=False)
     unknown.to_csv(agg / "q07_no_district_by_agency.csv", index=False)
-    fig_map(d, texts, figs / "q07_district_map.png", note)
-    fig_district_rates(d, city_rate, figs / "q07_district_rates.png", period)
-    fig_income(pumas, facts, figs / "q07_income.png", period)
+    fig_map(d, texts, figs / "q07_district_map.png", note, map_title(facts))
+    fig_district_rates(d, city_rate, figs / "q07_district_rates.png", period, facts)
+    fig_income(pumas, facts, figs / "q07_income.png", period, commuters)
 
     v = dict(d=d, boroughs=boroughs, ex=ex, pumas=pumas, facts=facts, texts=texts, unknown=unknown, period=period,
              pops=pops, days=days, city_rate=city_rate)
     _report(cfg.out_dir, v)
     _write_answer(cfg.out_dir, v)
     return {"districts": d, "boroughs": boroughs, "exclusions": ex, "pumas": pumas, "facts": facts,
-            "insights": texts, "no_district_by_agency": unknown}
+            "insights": texts, "no_district_by_agency": unknown, "days": days, "period": period}
 
 
 def _report(out_dir, v):
@@ -427,21 +585,26 @@ def _report(out_dir, v):
     rep = Report(STAGE, out_dir)
     rep.add(f"Q7. Complaints per 1,000 residents a year by community district, {v['period']} "
             f"({len(v['days']):,} complete days)", f"population: {v['pops']}",
-            f"citywide rate (59 districts): {v['city_rate']:,.1f}")
+            f"citywide rate ({len(d)} districts): {v['city_rate']:,.1f}",
+            f"spread: {f['ratio']:.2f}-fold across {f['n_rated']} districts; {f['ratio_all']:.2f}-fold across all "
+            f"{f['n_districts']} (with {COMMUTER_LABEL}s)")
+    for c in f["commuters"]:
+        rep.add(f"{COMMUTER_LABEL}: {c['name']} rate {c['rate']:,.1f} (rank {c['rank']} of {len(d)}), residents "
+                f"{c['residents']:,.0f}, housing {c['housing_share']:.1f}%, top types: {_types_text(c['types'])}")
     rep.table(v["ex"].round(2), title="Rows (default set -> mapped to a district)")
     rep.table(v["unknown"], max_rows=6, title="No community district, by agency")
     rep.table(v["boroughs"].drop(columns=["person_years"]).round(1), title="Boroughs")
     cols = ["boro_cd", "borough", "cd_name", "n", "rate", "housing_share_pct", "top_category", "top_category_pct",
-            "median_hh_income"]
+            "median_hh_income", "commuter"]
     ranked = d.sort_values("rate", ascending=False)[cols].round(1)
-    rep.table(ranked.head(TOP_K), title=f"Top {TOP_K} districts by rate")
+    rep.table(ranked.head(TOP_K), title=f"Top {TOP_K} districts by rate (all districts)")
     rep.table(ranked.tail(5), title="Bottom 5 districts by rate")
     if d.low_n.any():
         rep.add(f"districts with fewer than {MIN_N} complaints (hatched): " + ", ".join(map(str, d.boro_cd[d.low_n])))
     rep.add("", "Three insights (in the map figure and answers/q07.md):")
     for i, t in enumerate(v["texts"], 1):
         rep.add(*textwrap.wrap(f"{i}. {t}", 110, subsequent_indent="   "))
-    rep.add("", f"gap contributions (top {TOP_K} vs bottom {TOP_K}): " + "; ".join(
+    rep.add("", f"gap contributions (top {TOP_K} vs bottom {TOP_K}, {COMMUTER_LABEL}s left out): " + "; ".join(
         f"{c} {x:.1f}%" for c, x in f["gap_cats"]))
     rep.emit()
 
@@ -460,19 +623,20 @@ def _md(text):
 
 def _write_answer(out_dir, v):
     d, f, b, exi = v["d"], v["facts"], v["boroughs"], v["ex"].set_index("step")
-    ranked = d.sort_values("rate", ascending=False)
+    ranked = _residential(d).sort_values("rate", ascending=False)
     bt = pd.DataFrame({
         "Borough": b.borough, "Districts": b.districts, "Complaints": [f"{x:,}" for x in b.n],
         "Per 1,000 a year": [f"{x:,.0f}" for x in b.rate], "Housing share": [f"{x:.0f}%" for x in b.housing_share_pct],
         "Borough known, no district": [f"{x:,}" for x in b.n_with_borough_no_district],
         "Highest district": b.highest_district})
     unk = v["unknown"]
-    commuter = ranked.head(TOP_K)[ranked.head(TOP_K).housing_share_pct < 50]
+    n_all = int(d.n.sum())
+    comm = f["commuters"]
+    housing_comm = ", ".join(f"{c['housing_share']:.0f}%" for c in comm)
     lines = [
         "# Q7. Complaints by community district",
         "",
-        f"*Drafted by `nyc311/q07_geography.py` for {v['period']}. Every number is computed at run time; write the "
-        "prose from these bullets.*",
+        f"*Computed by `nyc311/q07_geography.py` from {n_all:,} complaints, {v['period']}.*",
         "",
         "## Data and method",
         "",
@@ -480,11 +644,16 @@ def _write_answer(out_dir, v):
         f"{v['pops']} (rule: 2010 Census for days before {POP_2020_FROM_YEAR}, 2020 Census from "
         f"{POP_2020_FROM_YEAR}). Only complete days count ({len(v['days']):,} days), so partial days don't dilute rates. "
         f"Citywide: {v['city_rate']:,.0f} per 1,000 a year.",
-        f"- **Rows.** Of the default set's {int(exi.rows.iloc[0]):,} rows, {int(d.n.sum()):,} complaints "
-        f"({exi.loc['mapped to a community district', 'pct']:.1f}%) map to one of the 59 districts. Left out: " +
+        f"- **Rows.** Of the default set's {int(exi.rows.iloc[0]):,} rows, {n_all:,} complaints "
+        f"({exi.loc[MAPPED, 'pct']:.1f}%) map to one of the {len(d)} districts. Left out: " +
         "; ".join(f"{_md(k)} {int(r.rows):,} ({r.pct:.1f}%)" for k, r in exi.iloc[1:-1].iterrows()) + ".",
         f"- **No district** is mostly " + ", ".join(f"{r.agency} {r.n:,}" for r in unk.head(3).itertuples()) +
         " (requests with no usable address or coordinates).",
+        *([f"- **Commuter district.** " + " ".join(commuter_sentence(c, f) for c in comm) +
+           f" Housing (heat, hot water, conditions) is {housing_comm} of its complaints. "
+           f"Spread: {f['ratio']:.1f}-fold across the other {f['n_rated']} districts, {f['ratio_all']:.1f}-fold "
+           f"across all {f['n_districts']}. It is mapped and counted in its borough and the citywide rate, but left "
+           "out of rankings, top/bottom groups and income comparisons."] if comm else []),
         "",
         "![Complaints per 1,000 residents by community district, with three insights](figs/q07_district_map.png)",
         "",
@@ -496,7 +665,7 @@ def _write_answer(out_dir, v):
         "",
         *_pipe_table(bt),
         "",
-        f"- **Highest rates:** " + "; ".join(
+        f"- **Highest rates** ({COMMUTER_LABEL}s left out): " + "; ".join(
             f"{r.borough} {r.cd_number} ({r.cd_name}) {r.rate:,.0f}, top category {r.top_category} "
             f"{r.top_category_pct:.0f}%" for r in ranked.head(5).itertuples()) + ".",
         f"- **Lowest rates:** " + "; ".join(
@@ -505,7 +674,8 @@ def _write_answer(out_dir, v):
         "",
         "![District rates split into housing and other complaints](figs/q07_district_rates.png)",
         "",
-        f"- **Income** (55 PUMAs; 4 district pairs share one ACS value and are pooled): rank correlation of median "
+        f"- **Income** ({f['n_units']} PUMAs; districts that share one ACS value are pooled"
+        + (f"; {', '.join(c['short'] for c in comm)} left out" if comm else "") + "): rank correlation of median "
         f"household income with the housing-complaint rate {f['rho_housing']:+.2f}, with all other complaints "
         f"{f['rho_other']:+.2f}.",
         "",
@@ -518,10 +688,8 @@ def _write_answer(out_dir, v):
         "of them; a low rate is not proof of good conditions.",
         "- **Denominators.** Census counts (2020 counts carry small differential-privacy noise); ACS income is from "
         "PUMAs that only approximate districts, in 2014 dollars. Boundaries are current, not historical.",
-        *([f"- **Workers and visitors.** Per-resident rates overstate districts where many complaints come from people "
-            f"who don't live there. Among the top {TOP_K}, housing is under half of complaints in " + "; ".join(
-                f"{r.borough} {r.cd_number} ({r.cd_name}, {r.housing_share_pct:.0f}% housing, top category "
-                f"{r.top_category})" for r in commuter.itertuples()) + "."] if len(commuter) else []),
+        "- **Workers and visitors.** Any district with many commuters, shoppers or visitors (not only the one "
+        "flagged) has a per-resident rate pushed up by people who don't live there.",
         f"- **Coverage.** Districts with fewer than {MIN_N} complaints would be hatched on the map "
         f"({int(d.low_n.sum())} here). Correlations across areas say nothing about individual households.",
         "",
