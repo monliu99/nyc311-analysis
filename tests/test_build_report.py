@@ -182,3 +182,10 @@ def test_wrapped_list_lines_stay_in_their_item(tmp_path):
     assert "<strong>bold across lines</strong>" in out and "<p>After the list.</p>" in out
     out = build_report.md_to_html("- item\n| a | b |\n|---|---|\n| 1 | 2 |\n", tmp_path)
     assert "<li>item</li>" in out and "<table>" in out
+
+
+def test_charts_open_full_size_on_click(built):
+    assert "figure img{display:block;max-width:100%;height:auto;cursor:zoom-in}" in built
+    assert ".zoom{position:fixed" in built and ".zoom{display:none}" in built  # hidden in print
+    assert "document.querySelectorAll('figure img')" in built and "e.key==='Escape'" in built
+    assert "Click any chart to enlarge it." in built

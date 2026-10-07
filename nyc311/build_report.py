@@ -198,7 +198,11 @@ border-left:3px solid var(--sage-band)}
 
 /* figures: numbered, captioned, wider than the text */
 figure{margin:2.25rem 0 2.5rem;break-inside:avoid}
-figure img{display:block;max-width:100%;height:auto}
+figure img{display:block;max-width:100%;height:auto;cursor:zoom-in}
+/* click a chart to see it at full size (dense charts are small at column width) */
+.zoom{position:fixed;inset:0;z-index:50;overflow:auto;padding:1.5rem;background:rgba(255,255,255,.97);cursor:zoom-out}
+.zoom:focus{outline:none}
+.zoom img{display:block;margin:0 auto;width:auto;max-width:min(100%,2400px);height:auto}
 figcaption{font:.875rem/1.45 var(--sans);color:var(--muted);margin-top:.75rem;padding-top:.6rem;
 border-top:1px solid var(--rule)}
 .fig-num{font-weight:700;color:var(--ink)}
@@ -256,6 +260,8 @@ h2,h3,h4,h5,.findings-label,.brief,.findings p.source{break-after:avoid}
 figure,tr,.brief,pre,blockquote{break-inside:avoid}
 figure img{width:auto;height:auto;max-width:100%;max-height:7.4in}
 figure.dashboard iframe{display:none}
+figure img{cursor:auto}
+.zoom{display:none}
 .print-only{display:block;border:1px dashed var(--sage-band);padding:1rem 1.1rem;font:.9375rem/1.5 var(--sans);
 color:var(--muted);max-width:none}
 a{color:inherit;text-decoration:none}
@@ -281,6 +287,26 @@ TOC_JS = """
     });
   },{rootMargin:'-25% 0px -74% 0px'});
   document.querySelectorAll('main section[id]').forEach(function(s){io.observe(s);});
+})();
+"""
+
+# Click (or Enter on) a chart to open it at full size; click anywhere or press Escape to close.
+ZOOM_JS = """
+(function(){
+  var open=null,from=null;
+  function close(){if(!open)return;open.remove();open=null;if(from)from.focus();}
+  function show(img){
+    from=img;open=document.createElement('div');open.className='zoom';
+    open.setAttribute('role','dialog');open.setAttribute('aria-label',img.alt+' (full size; click or Escape to close)');
+    open.tabIndex=-1;var big=new Image();big.src=img.src;big.alt=img.alt;open.appendChild(big);
+    open.addEventListener('click',close);document.body.appendChild(open);open.focus();
+  }
+  document.querySelectorAll('figure img').forEach(function(img){
+    img.tabIndex=0;img.title='Click to enlarge';
+    img.addEventListener('click',function(){show(img);});
+    img.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();show(img);}});
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')close();});
 })();
 """
 
@@ -539,7 +565,7 @@ def build(out_dir, prose_dir=PROSE_DIR, meta=None):
 <a class="skip" href="#report">Skip to the report</a>
 <div class="layout">
 <header class="masthead"><h1>NYC 311 Service Analytics</h1>{dek}{note}
-<p class="meta">Generated {generated} by <code>python run_all.py</code>{source}.</p></header>
+<p class="meta">Generated {generated} by <code>python run_all.py</code>{source}. Click any chart to enlarge it.</p></header>
 <nav class="toc" aria-label="Contents"><p class="toc-title">Contents</p><ol>{"".join(toc)}</ol></nav>
 <main id="report">
 {body}
@@ -548,7 +574,7 @@ def build(out_dir, prose_dir=PROSE_DIR, meta=None):
 data regenerates this report. Cleaning decisions are documented in the README.</p>{"".join(appendix)}</section>
 </main>
 </div>
-<script>{TOC_JS}</script>
+<script>{TOC_JS}{ZOOM_JS}</script>
 </body></html>"""
     path = out_dir / "report.html"
     path.write_text(doc)
