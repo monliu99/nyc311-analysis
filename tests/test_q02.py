@@ -2,15 +2,16 @@
 import sys
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pytest
 
-from nyc311 import clean, ingest, q02_timing as q2
+from nyc311 import clean, ingest, q02_timing as q2, rules
 from nyc311.config import Config
 
 REPO = Path(__file__).resolve().parent.parent
-BASE = "not is_test and not dup_key"
+BASE = rules.BASE_SQL
 
 
 # ---------------------------------------------------------------- pure helpers
@@ -43,6 +44,35 @@ def test_robust_score_flags_a_spike_and_a_dip_but_not_the_weekly_rhythm():
     # the baseline is the same weekday's level, so a Saturday is compared with Saturdays
     sat = out[out.index.dayofweek == 5].baseline.dropna()
     assert sat.between(50, 70).all()
+
+
+def test_surge_day_excess_and_its_usual_level_use_the_same_baseline():
+    """The 'usual' level printed beside a surge day is the mean of the same-weekday days whose per-type means give
+    the excess shares, so the shares are of (day - usual) and can pass 100% when other types fall below usual."""
+    mondays = pd.date_range("2015-01-05", periods=9, freq="7D")
+    rows = []
+    for i, d in enumerate(mondays):
+        a, b = (40, 3) if i == 4 else (10, 5 + (i % 2))  # B alternates 5/6: mean 5.5, median differs from mean
+        rows += [(d, "A")] * a + [(d, "B")] * b
+    toy = pd.DataFrame(rows, columns=["created", "canonical_type"]).assign(
+        complaint_type=lambda x: x.canonical_type, is_test=False, dup_key=False)
+    con = duckdb.connect()
+    con.register("toy", toy)
+    totals = toy.groupby("created").size()
+    scored = pd.DataFrame({"date": mondays, "n": totals.reindex(mondays).to_numpy(), "baseline": 99.0,
+                           "z": np.where(mondays == mondays[4], 9.0, 0.0),
+                           "kind": np.where(mondays == mondays[4], "high", ""), "holiday": None})
+    out = q2.surge_days(con, "toy", scored)
+    r = out.iloc[0]
+    usual = totals.drop(mondays[4]).mean()
+    assert r.n == 43 and r.baseline == pytest.approx(usual) and r.excess == pytest.approx(43 - usual)
+    a_excess = 40 - 10
+    assert r.drivers.startswith(f"A +{a_excess} ({100 * a_excess / (43 - usual):.0f}% of excess)")
+
+
+def test_requests_outside_the_window_are_mentioned_only_when_there_are_some():
+    assert q2.outside_sentence(0) == ""
+    assert "43" in q2.outside_sentence(43) and "left out" in q2.outside_sentence(43)
 
 
 def test_bulk_closure_needs_many_times_the_usual_volume_and_enough_rows():
@@ -160,17 +190,24 @@ def test_outputs_charts_and_answer_are_written(q02):
     text = (cfg.out_dir / "answers" / "q02.md").read_text()
     assert text.startswith("# Q2") and "{" not in text and "nan" not in text.split()
     assert len((cfg.out_dir / "reports" / f"{q2.STAGE}.txt").read_text().splitlines()) <= 152
+    note = text.splitlines()[2]
+    assert note.startswith("*Computed by `nyc311/q02_timing.py` from ") and note.endswith("*")
+    assert "write the prose" not in text and "Drafted" not in text
+    n = con.sql(f"select count(*) from {src} where {BASE}").fetchone()[0]
+    assert f"{n:,}" in note
 
 
 # ---------------------------------------------------------------- several years (synthetic pull)
 
 @pytest.fixture(scope="module")
 def years(tmp_path_factory):
+    """Twelve synthetic years (2010 to Nov 2021) with planted problem files and a run of missing batch numbers
+    near the end, which the cleaning stage's sparse-tail rule turns into flagged days from mid-2020 on."""
     sys.path.insert(0, str(REPO / "tools"))
     import make_synthetic_batches as synth
     root = tmp_path_factory.mktemp("years")
-    synth.main(["--files", "70", "--rows-per-file", "300", "--start", "2010-01-01", "--end", "2013-12-31",
-                "--out", str(root / "data")])
+    synth.main(["--files", "140", "--rows-per-file", "150", "--start", "2010-01-01", "--end", "2021-11-20",
+                "--missing-numbers", "6", "--out", str(root / "data")])
     cfg = Config.from_args(["--data", str(root / "data" / "311_batch_*.json"), "--out", str(root / "out"),
                             "--work", str(root / "work"), "--threads", "2", "--memory-limit", "2GB"])
     ingest.run(cfg)
@@ -180,11 +217,38 @@ def years(tmp_path_factory):
 
 def test_several_years_use_yearly_periods_and_average_only_full_years(years):
     cfg, out = years
+    con, src = cfg.connect(), clean.clean_glob(cfg)
     assert out["unit"] == "year"
     pat = out["patterns"]
-    assert len(pat["full_years"]) >= 2 and set(pat["avg_years"]) == set(pat["full_years"])
+    full = clean.full_years(con, src)
+    assert pat["full_years"] == full
+    assert pat["avg_years"] == [y for y in full if y <= rules.PROFILE_LAST_YEAR] and len(pat["avg_years"]) >= 2
     assert pat["woy"].dropna(subset=["open"]).year.nunique() >= 3
     assert (cfg.out_dir / "figs" / "q02_week_patterns.png").exists()
+
+
+def test_typical_profiles_leave_out_years_after_the_profile_cutoff(years):
+    cfg, out = years
+    pat, d = out["patterns"], out["daily"]
+    later = sorted(y for y in d.date.dt.year.unique() if y > rules.PROFILE_LAST_YEAR)
+    assert later and pat["later_years"] == later
+    assert not set(pat["avg_years"]) & set(later)
+    # the typical week-of-year line is the mean over the averaged years only
+    woy = pat["woy"]
+    expect = woy[woy.year.isin(pat["avg_years"])].groupby("week").open.mean()
+    got = pat["woy_avg"].set_index("week").open
+    assert np.allclose(got.reindex(expect.index), expect, equal_nan=True)
+    # and the typical weekday bar is the mean over usable days (not flagged, not empty) of those years
+    ok = d[~d.incomplete & (d.n_open > 0) & d.date.dt.year.isin(pat["avg_years"])]
+    tue = ok[ok.date.dt.dayofweek == 1].n_open.mean()
+    assert pat["dow"].set_index("weekday").open[1] == pytest.approx(tue)
+    # the peak-week statement comes from that profile
+    wa = pat["woy_avg"].dropna(subset=["open"])
+    peak = int(wa.loc[wa.open.idxmax(), "week"])
+    text = (cfg.out_dir / "answers" / "q02.md").read_text()
+    assert f"peak in week {peak} " in text
+    for y in later:
+        assert str(y) in text.split("## (c)")[1]
 
 
 def test_several_years_explain_flagged_days_with_missing_batches(years):
@@ -193,3 +257,18 @@ def test_several_years_explain_flagged_days_with_missing_batches(years):
     assert len(inc) > 0 and not inc.reason.str.contains(q2.UNEXPLAINED).any()
     assert inc.reason.str.contains("missing").any()
     assert len(out["missing_batches"]) > 0
+    # the sparse tail: every flagged day from its start to the end has the one tail reason (days with no rows at
+    # all, inside the run of missing batches, have nothing to flag and show up as gaps instead)
+    tail = inc[inc.reason.str.contains("end of the pull")]
+    assert len(tail) > 0 and tail.date.max() == inc.date.max() and tail.reason.nunique() == 1
+    assert inc[inc.date >= tail.date.min()].reason.str.contains("end of the pull").all()
+
+
+def test_days_with_no_openings_do_not_count_as_usable_weeks(years):
+    cfg, out = years
+    d, woy = out["daily"], out["patterns"]["woy"]
+    empty = d[(d.n_open == 0) & ~d.incomplete]
+    assert len(empty) > 0  # the run of missing batch numbers leaves days with no rows at all
+    for r in woy.dropna(subset=["open"]).itertuples():
+        first = pd.Timestamp(year=r.year, month=1, day=1) + pd.Timedelta(days=7 * (r.week - 1))
+        assert not pd.date_range(first, periods=7).isin(empty.date).any(), (r.year, r.week)

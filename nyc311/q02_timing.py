@@ -1,15 +1,17 @@
 """Q2: is data collection consistent over time? Daily openings (a), closing times (b), and a board-ready
 chart of openings and closings by day of week and week of year (c).
 
-Rows: the README's default set (not is_test and not dup_key). The analysis window runs from the first to the last
-opening date of rows inside their file's dates (not out_of_file_order); rows opened outside it are counted and
-left out of daily series. Daily and weekly averages also leave out possibly_incomplete_day. Aggregation runs in
-DuckDB; only daily or monthly tables come into pandas. Every number in text and charts is computed.
+Rows: the README's default set (rules.BASE_SQL: not is_test and not dup_key). The analysis window runs from the
+first to the last opening date of rows inside their file's dates (not out_of_file_order); rows opened outside it are
+counted and left out of daily series. Daily and weekly averages also leave out possibly_incomplete_day. The typical
+day-of-week and week-of-year profiles average the full calendar years (clean.full_years) up to
+rules.PROFILE_LAST_YEAR; later years (the pandemic) are drawn and described separately. Aggregation runs in DuckDB;
+only daily or monthly tables come into pandas. Every number in text and charts is computed.
 """
 from __future__ import annotations
 
 import math
-import re
+import textwrap
 import warnings
 
 import matplotlib
@@ -21,13 +23,14 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from pandas.tseries.holiday import USFederalHolidayCalendar  # noqa: E402
 
-from nyc311 import discover, nytplot as nyt, rules  # noqa: E402
+from nyc311 import clean, discover, nytplot as nyt, rules  # noqa: E402
 from nyc311.clean import clean_glob  # noqa: E402
-from nyc311.q01_missing import md_table, period_sql, period_unit  # noqa: E402
+from nyc311.q01_missing import period_sql, period_unit  # noqa: E402
+from nyc311.q05_top_types import profile_years, years_label  # noqa: E402
 from nyc311.report import Report  # noqa: E402
 
 STAGE = "q02_timing"
-BASE = "not is_test and not dup_key"
+BASE = rules.BASE_SQL
 BASELINE_WEEKS = 4        # same weekday, up to 4 weeks before and after
 MIN_BASELINE = 3          # at least 3 such days to score a day
 ROBUST_Z = 3.5            # |robust z| of log(day / same-weekday median) that counts as unusual
@@ -46,6 +49,7 @@ MAX_MARKS = 15            # dots on the daily chart: the most unusual days and l
 CLOSE_WARMUP_QUANTILE = 0.75  # closings in the first p75-duration days miss requests opened before the data
 UNEXPLAINED = "flagged by the cleaning stage; reason not reconstructed"
 GRAY, LIGHT_GRAY = "#8c8c8c", "#e6e6e6"
+LATER_HUES = nyt.HUES[2:5]  # years after rules.PROFILE_LAST_YEAR, each in its own color
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
@@ -72,6 +76,12 @@ def analysis_window(con, src):
                         and (created is null or created::date not between {_lit_date(start)} and {_lit_date(end)})
                      """).fetchone()[0]
     return pd.Timestamp(start), pd.Timestamp(end), int(n_out)
+
+
+def outside_sentence(n):
+    """The sentence about requests opened outside the window; empty when there are none."""
+    return (f"{n:,} requests opened outside the window (stray backfilled rows) are left out of the daily series."
+            if n else "")
 
 
 def daily_table(con, src, start, end):
@@ -109,9 +119,42 @@ def _file_windows(con, src):
         from j group by 1 order by 1""").df()
 
 
+def _num_ranges(nums):
+    """[10, 2820, 2821, 2822] -> '10, 2820-2822'."""
+    nums, out = sorted(nums), []
+    for n in nums:
+        if out and n == out[-1][1] + 1:
+            out[-1][1] = n
+        else:
+            out.append([n, n])
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in out)
+
+
+def sparse_tail(numbered, present, last_day):
+    """The cleaning stage's sparse-tail rule (clean.incomplete_days, rules.SPARSE_TAIL_*): from the earliest missing
+    batch number g with enough of [g, last] missing, every day after the median date of the last date-ordered file
+    before g is possibly incomplete. Returns (first day, last day, reason) or None."""
+    if not present:
+        return None
+    last_num = max(present)
+    missing = sorted(set(range(min(present), last_num + 1)) - set(present))
+    for i, g in enumerate(missing):
+        k, span = len(missing) - i, last_num - g + 1
+        if k >= rules.SPARSE_TAIL_MIN_MISSING and k / span >= rules.SPARSE_TAIL_MISSING_SHARE:
+            before = numbered[numbered.num < g]
+            if not len(before):
+                return None
+            lo = before.p50.iloc[-1] + pd.Timedelta(days=1)
+            return lo, last_day, (f"end of the pull: {k} of the {span} batch numbers {g}-{last_num} are missing "
+                                  f"({_num_ranges(missing[i:])}); files there overlap in time, so every day after "
+                                  f"the median date of {before.file.iloc[-1]} is flagged")
+    return None
+
+
 def incomplete_reasons(con, src, manifest, daily):
     """Why each possibly_incomplete_day is flagged, reconstructed with the cleaning stage's rules: the late days of
-    a cut-off file, the days between the files around missing batch numbers, and days after the last file."""
+    a cut-off file, the days between the files around missing batch numbers, days after the last file, and every
+    day from the start of a run of missing numbers at the end of the pull (the sparse tail, one reason for all)."""
     days = daily[daily.incomplete]
     reasons = {d: [] for d in days.date}
     if not reasons:
@@ -148,6 +191,11 @@ def incomplete_reasons(con, src, manifest, daily):
             label = f"{lo}" if lo == hi else f"{lo}-{hi}"
             add(prev.p50 + pd.Timedelta(days=1), nxt.p50 - pd.Timedelta(days=1),
                 f"batch {label} missing (between {prev.file} and {nxt.file})")
+        tail = sparse_tail(numbered, present, fw.mx.max())
+        if tail:
+            for d in pd.date_range(tail[0], tail[1], freq="D"):
+                if d in reasons:
+                    reasons[d] = [tail[2]]  # one reason for the whole tail (it covers the gaps inside it)
     out = days[["date", "n_open"]].copy()
     out["reason"] = [("; ".join(reasons[d]) if reasons[d] else UNEXPLAINED) for d in out.date]
     return out.reset_index(drop=True)
@@ -271,11 +319,14 @@ def _type_expr():
 
 
 def surge_days(con, src, scored, k=TOP_SURGE_DAYS, weeks=BASELINE_WEEKS):
-    """The k highest-scoring days and the complaint types that drove their excess over the same weekday
-    (per-type average of the baseline days; excess shares are of the day's total minus that average)."""
+    """The k highest-scoring days and the complaint types that drove their excess over the same weekday.
+
+    baseline is the MEAN of the usable same-weekday days up to `weeks` weeks either side (the scoring uses their
+    median); per-type means over the same days add up to it, so each type's share of the excess (n - baseline) is
+    coherent. Shares can pass 100% when other types run below their usual level that day."""
     hi = scored[scored.kind == "high"].sort_values("z", ascending=False).head(k)
     if hi.empty:
-        return pd.DataFrame(columns=["date", "n", "baseline", "excess", "drivers"])
+        return pd.DataFrame(columns=["date", "n", "baseline", "excess", "n_baseline_days", "holiday", "drivers"])
     usable = set(scored[~scored.kind.isin(["excluded", "empty"])].date)
     neigh = {}
     for d in hi.date:
@@ -294,8 +345,8 @@ def surge_days(con, src, scored, k=TOP_SURGE_DAYS, weeks=BASELINE_WEEKS):
         day = wide[r.date] if r.date in wide.columns else pd.Series(0, index=wide.index)
         ex = (day - base).sort_values(ascending=False)
         total = float(day.sum() - base.sum())
-        rows.append({"date": r.date, "n": int(r.n), "baseline": float(r.baseline), "excess": float(total),
-                     "holiday": r.holiday,
+        rows.append({"date": r.date, "n": int(r.n), "baseline": float(base.sum()), "excess": total,
+                     "n_baseline_days": len(neigh[r.date]), "holiday": r.holiday,
                      "drivers": "; ".join(f"{t} +{v:,.0f} ({100 * v / total:.0f}% of excess)"
                                           for t, v in ex.head(TOP_DRIVERS).items() if v > 0)})
     return pd.DataFrame(rows)
@@ -449,19 +500,19 @@ def warmup_days(con, src):
 
 # ---------------------------------------------------------------- (c) day-of-week and week-of-year patterns
 
-def week_patterns(daily, start, end, warmup):
+def week_patterns(daily, start, end, warmup, full_years):
     """Average openings/closings per day by weekday and by week of the year (week 1 = Jan 1-7; week 53 dropped).
-    Openings use days not flagged possibly incomplete; closings also skip the first `warmup` days. A year-week
-    counts only if all 7 days are usable. Averages use full calendar years inside the window, else all years."""
+    Usable days are not flagged possibly incomplete and have at least one opening (a day with no rows at all is a
+    gap in the files, not a quiet day); closings also skip the first `warmup` days. A year-week counts only if all 7
+    days are usable. The typical profile averages the full calendar years (clean.full_years)
+    up to rules.PROFILE_LAST_YEAR; later years are kept apart (later_years); see profile_years for fallbacks."""
     d = daily.copy()
-    d["open_ok"] = ~d.incomplete
+    d["open_ok"] = ~d.incomplete & (d.n_open > 0)
     d["close_ok"] = d.open_ok & (d.date >= start + pd.Timedelta(days=warmup))
     d["year"] = d.date.dt.year
     d["week"] = (d.date.dt.dayofyear - 1) // 7 + 1
-    years = sorted(d.year.unique())
-    full = [int(y) for y in years if pd.Timestamp(year=y, month=1, day=1) >= start
-            and pd.Timestamp(year=y, month=12, day=31) <= end]
-    avg_years = full or [int(y) for y in years]
+    years = sorted(int(y) for y in d.year.unique())
+    avg_years, later = profile_years(full_years, years)
     a = d[d.year.isin(avg_years)]
     dow = pd.DataFrame({"weekday": range(7), "name": WEEKDAYS})
     for kind, ok in [("open", "open_ok"), ("close", "close_ok")]:
@@ -483,8 +534,31 @@ def week_patterns(daily, start, end, warmup):
     wa = woy[woy.year.isin(avg_years)].groupby("week").agg(open=("open", "mean"), close=("close", "mean"),
                                                           n_years_open=("open", "count"),
                                                           n_years_close=("close", "count")).reset_index()
-    return {"dow": dow, "dow_years": dow_years, "woy": woy, "woy_avg": wa, "full_years": full,
-            "avg_years": avg_years, "warmup": warmup}
+    return {"dow": dow, "dow_years": dow_years, "woy": woy, "woy_avg": wa, "full_years": list(full_years),
+            "avg_years": avg_years, "later_years": later,
+            "other_years": [y for y in years if y not in avg_years and y not in later], "warmup": warmup,
+            "n_empty": int(((d.n_open == 0) & ~d.incomplete).sum())}
+
+
+def later_year_summary(pat):
+    """Per later year: its busiest weekday and its peak week (openings), against the typical profile."""
+    dy, woy, wa = pat["dow_years"], pat["woy"], pat["woy_avg"].set_index("week")
+    rows = []
+    for y in pat["later_years"]:
+        w = woy[(woy.year == y)].dropna(subset=["open"])
+        dd = dy[dy.year == y].dropna(subset=["open"])
+        r = {"year": y, "n_weeks": len(w), "peak_week": None, "peak_open": np.nan, "typical_open": np.nan,
+             "first_week": None, "last_week": None, "top_day": None, "top_day_open": np.nan}
+        if len(w):
+            p = w.loc[w.open.idxmax()]
+            r.update(peak_week=int(p.week), peak_open=float(p.open), typical_open=float(wa.open.get(p.week, np.nan)),
+                     first_week=int(w.week.min()), last_week=int(w.week.max()))
+        if len(dd):
+            t = dd.loc[dd.open.idxmax()]
+            r.update(top_day=WEEKDAYS[int(t.weekday)], top_day_open=float(t.open))
+        rows.append(r)
+    return pd.DataFrame(rows, columns=["year", "n_weeks", "peak_week", "peak_open", "typical_open", "first_week",
+                                       "last_week", "top_day", "top_day_open"])
 
 
 # ---------------------------------------------------------------- charts
@@ -575,22 +649,55 @@ def _week_ticks(ax, lo, hi):
         ax.set_xlim(lo - 0.5, hi + 0.5)
 
 
-def _years_label(years):
-    years = sorted(years)
-    if len(years) == 1:
-        return str(years[0])
-    if years == list(range(years[0], years[-1] + 1)):
-        return f"{years[0]}-{years[-1]}"
-    return ", ".join(map(str, years))
+KEY_HEADROOM = 1.32  # y limit = this x the highest value, so the series key above the data never covers it
+
+
+def _key_row(ax, items, xy=(0.012, 0.97), fontsize=10.5):
+    """Series names in one row at the top of the panel (in the headroom above the data), bold in each series'
+    color, instead of a legend."""
+    prev = None
+    for text, color in items:
+        kw = dict(color=color, fontfamily=nyt.SANS, fontweight="bold", fontsize=fontsize, ha="left", va="top",
+                  zorder=5)
+        if prev is None:
+            prev = ax.text(*xy, text, transform=ax.transAxes, **kw)
+        else:
+            prev = ax.annotate(text, xy=(1, 1), xycoords=prev, xytext=(10, 0), textcoords="offset points", **kw)
+    return prev
+
+
+def _avg_key(years):
+    """Key text for the average: the years when they run on, else how many."""
+    lab = years_label(years)
+    return f"Average, {lab}" if "," not in lab else f"Average of {len(years)} years"
+
+
+def _avg_note(pat, start, end):
+    yrs = years_label(pat["avg_years"])
+    if pat["full_years"]:
+        what = f"the full calendar years {yrs}"
+    else:
+        what = f"{yrs} (no full calendar year in {_d(start)} to {_d(end)})"
+    later = pat["later_years"]
+    drawn = [y for y in later if (pat["woy"].year == y).any()]
+    blank = [y for y in later if y not in drawn]
+    if drawn:
+        what += f"; {years_label(drawn)} {'is' if len(drawn) == 1 else 'are'} drawn separately and not averaged"
+    if blank:
+        what += f"; {years_label(blank)} {'has' if len(blank) == 1 else 'have'} no complete week"
+    return what
 
 
 def plot_week_patterns(pat, daily, path, start, end):
-    """Board-ready: average openings and closings per day by weekday (bars) and week of year (lines)."""
+    """Board-ready: typical openings and closings per day by weekday (bars) and week of year (coral line), from the
+    full years up to rules.PROFILE_LAST_YEAR; later years as their own colored lines and dots; other years gray."""
     nyt.use()
-    fig, axes = plt.subplots(2, 2, figsize=(9.5, 6.6), sharey=True, gridspec_kw={"width_ratios": [1, 2.4]})
+    fig, axes = plt.subplots(2, 2, figsize=(9.5, 6.8), sharey=True, gridspec_kw={"width_ratios": [1, 2.4]})
     dow, dy, woy, wa = pat["dow"], pat["dow_years"], pat["woy"], pat["woy_avg"]
-    multi = woy.year.nunique() > 1
-    yrs = _years_label(pat["avg_years"])
+    later = pat["later_years"]
+    hue_of = {y: LATER_HUES[i % len(LATER_HUES)] for i, y in enumerate(later)}
+    drawn_later = [y for y in later if (woy.year == y).any()]
+    gray_years = sorted(set(woy.year) - set(later))
     weeks = woy.week if len(woy) else pd.Series([1, 52])
     lo, hi = int(weeks.min()), int(weeks.max())
     few = len(wa) < 10
@@ -603,37 +710,49 @@ def plot_week_patterns(pat, daily, path, start, end):
         colors = [nyt.CORAL.line if i == peak else nyt.CORAL.band for i in range(7)]
         ax_d.bar(range(7), np.nan_to_num(vals), color=colors, width=0.7, zorder=2)
         if dy.year.nunique() > 1:
-            ax_d.scatter(dy.weekday, dy[kind], s=8, color=GRAY, alpha=0.7, zorder=3, linewidths=0)
+            g = dy[~dy.year.isin(later)]
+            ax_d.scatter(g.weekday, g[kind], s=8, color=GRAY, alpha=0.7, zorder=3, linewidths=0)
+            for y in later:
+                g = dy[dy.year == y]
+                ax_d.scatter(g.weekday, g[kind], s=14, color=hue_of[y].line, zorder=4, linewidths=0)
         ax_d.set_xticks(range(7), [n[:3] for n in WEEKDAYS])
         ax_d.grid(axis="x", visible=False)
         nyt.panel_title(ax_d, f"{label}, by day of week")
         if np.isfinite(vals[peak]):
             ax_d.annotate(f"{vals[peak]:,.0f}", (peak, vals[peak]), xytext=(0, 3), textcoords="offset points",
                           ha="center", va="bottom", fontsize=8.5, color=nyt.CORAL.line, fontfamily=nyt.SANS,
-                          fontweight="bold")
-        for _, g in woy.groupby("year"):
-            g = g.set_index("week")[kind].reindex(range(1, 53))
+                          fontweight="bold", zorder=5)
+        for y in gray_years:
+            g = woy[woy.year == y].set_index("week")[kind].reindex(range(1, 53))
             ax_w.plot(g.index, g.values, color="#b3b3b3", lw=0.7, zorder=1, marker="o" if few else None, ms=3)
+        for y in drawn_later:
+            g = woy[woy.year == y].set_index("week")[kind].reindex(range(1, 53))
+            ax_w.plot(g.index, g.values, color=hue_of[y].line, lw=1.3, zorder=2, marker="o" if few else None, ms=3)
         avg = wa.set_index("week")[kind].reindex(range(1, 53)) if len(wa) else pd.Series(dtype=float)
-        ax_w.plot(avg.index, avg.values, color=nyt.CORAL.line, lw=2, zorder=3, marker="o" if few else None, ms=4)
+        ax_w.plot(avg.index, avg.values, color=nyt.CORAL.line, lw=2.2, zorder=3, marker="o" if few else None, ms=4)
         _week_ticks(ax_w, lo, hi)
         ax_w.grid(axis="x", visible=False)
         nyt.panel_title(ax_w, f"{label}, by week of the year")
-        nyt.panel_label(ax_w, f"Average, {yrs}", nyt.CORAL.line, xy=(0.012, 0.05))
-        if multi:
-            nyt.panel_label(ax_w, "Each year", GRAY, xy=(0.012, 0.16))
+        items = [(_avg_key(pat["avg_years"]), nyt.CORAL.line)] + [(str(y), hue_of[y].line) for y in drawn_later]
+        if len(gray_years) > 1 or (gray_years and drawn_later):
+            items.append(("Each year" if not later else f"Each year, {years_label(gray_years)}", GRAY))
+        _key_row(ax_w, items)
         nyt.format_y(ax_d)
-    axes[0, 0].set_ylim(0, top * 1.15 if np.isfinite(top) and top > 0 else 1)
+    axes[0, 0].set_ylim(0, top * KEY_HEADROOM if np.isfinite(top) and top > 0 else 1)
     po, pc = dow.loc[dow.open.idxmax(), "name"], dow.loc[dow.close.idxmax(), "name"]
     title = (f"311 requests are opened and closed most on {po}s" if po == pc else
              f"311 openings peak on {po}s, closings on {pc}s")
     nyt.title(fig, title)
     n_inc = int(daily.incomplete.sum())
-    full = ("Averages cover full calendar years only; partial years are gray lines." if pat["full_years"] else
-            f"No full calendar year is in the data ({_d(start)} to {_d(end)}).")
-    nyt.note(fig, f"Note: average requests per day, {yrs}. Leaves out {n_inc} days flagged as possibly incomplete; "
-                  f"closings also skip the first {pat['warmup']} days,\nwhen requests opened before the data starts "
-                  f"are missing. A week counts only if all 7 days are usable; week 1 = Jan 1-7.\n{full}")
+    dot_later = [y for y in later if dy[dy.year == y].open.notna().any()]
+    dots = (f" Dots on the bars: single years ({years_label(dot_later)} in "
+            f"{'its' if len(dot_later) == 1 else 'their'} line colors)." if dot_later and dy.year.nunique() > 1 else
+            " Dots on the bars: single years." if dy.year.nunique() > 1 else "")
+    empty = f" and {pat['n_empty']:,} with no rows at all" if pat["n_empty"] else ""
+    nyt.note(fig, textwrap.fill(
+        f"Note: average requests per day over {_avg_note(pat, start, end)}.{dots} Leaves out {n_inc} days flagged as "
+        f"possibly incomplete{empty}; closings also skip the first {pat['warmup']} days, when requests opened before "
+        "the data starts are missing. A week counts only if all 7 days are usable; week 1 = Jan 1-7.", 135))
     return nyt.save(fig, path)
 
 
@@ -667,7 +786,8 @@ def run(cfg):
     close_mid = share_by_agency_period(con, src, "date_only_closed", "closed", unit, start, end)
     bulk = bulk_closures(agency_close_days(con, src, start, end), start, end)
     warm = warmup_days(con, src)
-    pat = week_patterns(daily, start, end, warm)
+    pat = week_patterns(daily, start, end, warm, clean.full_years(con, src))
+    later = later_year_summary(pat)
 
     figs = cfg.out_dir / "figs"
     f_daily = plot_daily(daily, scored, bulk, inc_runs, figs / "q02_daily_volume.png", start, end)
@@ -691,19 +811,20 @@ def run(cfg):
     bulk.to_csv(agg / "q02_bulk_closures.csv", index=False)
     pd.concat([pat["dow"].assign(table="day_of_week"),
                pat["woy_avg"].assign(table="week_of_year_average"),
-               pat["woy"].assign(table="week_of_year_by_year")], ignore_index=True).to_csv(
+               pat["woy"].assign(table="week_of_year_by_year"),
+               pat["dow_years"].assign(table="day_of_week_by_year")], ignore_index=True).to_csv(
         agg / "q02_week_patterns.csv", index=False)
 
     v = dict(n_all=n_all, n_test=n_test, n_dup=n_dup, start=start, end=end, n_outside=n_outside, unit=unit,
              daily=daily, inc=inc, inc_runs=inc_runs, empty_runs=empty_runs, missing=missing, scored=scored, spans=spans,
              open_mid=open_mid, chan=chan, back=back, sdays=sdays, eps=eps, checks=checks, by_ag=by_ag,
-             ph_status=ph_status, outside=outside, close_mid=close_mid, bulk=bulk, pat=pat,
+             ph_status=ph_status, outside=outside, close_mid=close_mid, bulk=bulk, pat=pat, later=later,
              min_closed=min_closed, max_closed=max_closed, manifest=manifest, f_daily=f_daily, f_week=f_week)
     _report(cfg, v)
     _write_answer(cfg, v)
     return {"daily": daily, "incomplete": inc, "scored": scored, "missing_batches": missing,
             "closing_checks": checks, "bulk": bulk, "patterns": pat, "unit": unit, "n_outside": n_outside,
-            "surge_days": sdays, "surge_episodes": eps}
+            "surge_days": sdays, "surge_episodes": eps, "later_years": later}
 
 
 def _pivot_for_report(long):
@@ -718,8 +839,8 @@ def _report(cfg, v):
     n_base = int(v["checks"].set_index("check").rows["requests (default set)"])
     rep.add(f"Q2. Opening and closing times | window {start.date()} to {end.date()} ({len(d):,} days) | "
             f"{n_base:,} requests (left out: is_test {v['n_test']:,}, dup_key {v['n_dup']:,})",
-            f"opened outside the window (stray backfilled rows), left out of daily counts: {v['n_outside']:,} | "
-            f"days with no openings: {int((d.n_open == 0).sum()):,}")
+            (f"opened outside the window (stray backfilled rows), left out of daily counts: {v['n_outside']:,} | "
+             if v["n_outside"] else "") + f"days with no openings: {int((d.n_open == 0).sum()):,}")
     er = v["empty_runs"]
     if len(er):
         rep.add("empty stretches (no openings), longest first: " + "; ".join(
@@ -738,7 +859,8 @@ def _report(cfg, v):
               title=f"(a) Unusual days vs the same weekday +-{BASELINE_WEEKS} weeks (|robust z| >= {ROBUST_Z}): "
                     f"{int((sc.kind == 'low').sum())} low, {int((sc.kind == 'high').sum())} high; lowest first")
     rep.table(v["sdays"].assign(date=lambda x: pd.to_datetime(x.date).dt.date)[["date", "n", "baseline", "drivers"]],
-              max_rows=TOP_SURGE_DAYS, title="(a) Highest days: complaint types above their same-weekday level")
+              max_rows=TOP_SURGE_DAYS, title="(a) Highest days: complaint types above their same-weekday level "
+                                             "(baseline = mean of the same weekday +-4 weeks; shares are of n - baseline)")
     if len(v["eps"]):
         rep.table(v["eps"], max_rows=TOP_EPISODES, title=f"(a) Surge months (>= {SURGE_MIN_GROWTH:.0%} above the "
                                                          "same month a year earlier) and what drove them")
@@ -772,18 +894,55 @@ def _report(cfg, v):
     pat = v["pat"]
     dow = pat["dow"]
     rep.table(dow[["name", "open", "n_days_open", "close", "n_days_close"]].round(0), max_rows=7,
-              title=f"(c) Average per day by weekday ({_years_label(pat['avg_years'])}; closings skip the first "
+              title=f"(c) Average per day by weekday ({years_label(pat['avg_years'])}; closings skip the first "
                     f"{pat['warmup']} days)")
     wa = pat["woy_avg"].dropna(subset=["open"])
     if len(wa):
-        rep.add(f"(c) week of year (openings): highest week {int(wa.loc[wa.open.idxmax(), 'week'])} "
-                f"({wa.open.max():,.0f}/day), lowest week {int(wa.loc[wa.open.idxmin(), 'week'])} "
-                f"({wa.open.min():,.0f}/day); {len(wa)} weeks with complete data")
+        rep.add(f"(c) week of year (openings, {years_label(pat['avg_years'])}): highest week "
+                f"{int(wa.loc[wa.open.idxmax(), 'week'])} ({wa.open.max():,.0f}/day), lowest week "
+                f"{int(wa.loc[wa.open.idxmin(), 'week'])} ({wa.open.min():,.0f}/day); {len(wa)} weeks with complete "
+                f"data | full years: {years_label(pat['full_years'])}; profile up to {rules.PROFILE_LAST_YEAR}")
+    if len(v["later"]):
+        rep.table(v["later"].round(0), title=f"(c) Years after {rules.PROFILE_LAST_YEAR}, shown apart (openings)")
     rep.emit()
 
 
 def _pct(x, tot):
     return f"{100 * x / tot:.1f}%" if tot else "n/a"
+
+
+def _later_lines(pat, later):
+    """One bullet on the years after rules.PROFILE_LAST_YEAR, which the typical profile leaves out."""
+    if later.empty:
+        return []
+    parts = []
+    for r in later.itertuples(index=False):
+        if r.n_weeks:
+            vs = (f", {100 * (r.peak_open / r.typical_open - 1):+.0f}% vs the typical week {r.peak_week}"
+                  if r.typical_open > 0 else "")
+            cover = (f"; complete weeks {r.first_week}-{r.last_week} only" if (r.first_week, r.last_week) != (1, 52)
+                     else "")
+            text = f"{r.year}: openings peaked in week {r.peak_week} ({r.peak_open:,.0f} a day{vs}){cover}"
+        else:
+            text = f"{r.year}: no week with all 7 days usable"
+        if isinstance(r.top_day, str):
+            text += f"; busiest weekday {r.top_day} ({r.top_day_open:,.0f} a day)"
+        parts.append(text)
+    return [f"- **{years_label(pat['later_years'])}, shown apart** (after {rules.PROFILE_LAST_YEAR}; drawn as their "
+            "own lines, not in the average): " + "; ".join(parts) + "."]
+
+
+def _averages_sentence(pat):
+    yrs = years_label(pat["avg_years"])
+    if not pat["full_years"]:
+        return f"No full calendar year is in the data, so averages use {yrs} as it is."
+    text = f"Averages use the full calendar years {yrs}"
+    if pat["later_years"]:
+        text += f" (up to {rules.PROFILE_LAST_YEAR}); {years_label(pat['later_years'])} are drawn in color"
+    other = pat["other_years"]
+    if other:
+        text += f"; {years_label(other)} ({'not a full year' if len(other) == 1 else 'not full years'}) gray"
+    return text + "."
 
 
 def _write_answer(cfg, v):
@@ -810,7 +969,7 @@ def _write_answer(cfg, v):
     ph = v["ph_status"]
     dow = pat["dow"].set_index("name")
     wa = pat["woy_avg"]
-    yrs = _years_label(pat["avg_years"])
+    yrs = years_label(pat["avg_years"])
 
     def per(p):
         return f"the week of {p}" if unit == "week" else str(p)
@@ -843,7 +1002,7 @@ def _write_answer(cfg, v):
     peak_w = wa.dropna(subset=["open"])
     week_line = (f"Openings peak in week {int(peak_w.loc[peak_w.open.idxmax(), 'week'])} "
                  f"({peak_w.open.max():,.0f} a day) and bottom out in week {int(peak_w.loc[peak_w.open.idxmin(), 'week'])}"
-                 f" ({peak_w.open.min():,.0f} a day), averaged over {yrs}."
+                 f" ({peak_w.open.min():,.0f} a day), averaged over {_avg_note(pat, start, end)}."
                  if len(peak_w) >= 12 else
                  f"Only {len(peak_w)} complete week(s) are available ({_d(start)} to {_d(end)}), so the "
                  "week-of-year panel shows coverage, not seasonality; the same code draws 52 weeks per year on the "
@@ -851,17 +1010,15 @@ def _write_answer(cfg, v):
     lines = [
         "# Q2. Consistency of data collection over time",
         "",
-        f"*Drafted by `nyc311/q02_timing.py` from {n_base:,} requests (default set: not `is_test` and not `dup_key`), "
-        f"opened {_d(start)} to {_d(end)} ({len(d):,} days). Numbers are computed; write the prose from these "
-        "bullets. Tables: `outputs/agg/q02_*.csv`.*",
+        f"*Computed by `nyc311/q02_timing.py` from {n_base:,} requests (not `is_test` and not `dup_key`), "
+        f"opened {_d(start)} to {_d(end)} ({len(d):,} days).*",
         "",
         "## (a) Daily volume of requests",
         "",
         f"![Daily 311 requests opened and closed, with flagged days marked](figs/{v['f_daily'].name})",
         "",
-        f"- **Typical day.** A median of {usual_open:,.0f} requests a day are opened (days not flagged). "
-        f"{v['n_outside']:,} requests opened outside the window (stray backfilled rows) are left out of the daily "
-        "series.",
+        f"- **Typical day.** A median of {usual_open:,.0f} requests a day are opened (days not flagged)."
+        + (" " + outside_sentence(v["n_outside"]) if v["n_outside"] else ""),
         f"- **Gaps.** {int((d.n_open == 0).sum())} days in the window have no openings at all"
         + (": " + "; ".join(f"{_d(r[0])} to {_d(r[1])} ({r[2]} days)" for r in v["empty_runs"].sort_values(
             "days", ascending=False).head(5).itertuples(index=False)) if len(v["empty_runs"]) else "") + ".",
@@ -873,11 +1030,14 @@ def _write_answer(cfg, v):
         "Files cut off or unreadable: " + (", ".join(
             f"{r.file} ({int(r.n_records):,} rows kept)" for r in v["manifest"][~v["manifest"].parse_ok.astype(bool)]
             .itertuples(index=False)) or "none") + ".",
-        f"- **Unusually low days** (vs. the same weekday {BASELINE_WEEKS} weeks either side, robust z <= -{ROBUST_Z}): "
+        f"- **Unusually low days** (vs. the median of the same weekday {BASELINE_WEEKS} weeks either side, robust z "
+        f"<= -{ROBUST_Z}): "
         f"{len(low)} days, {len(hol_low)} of them federal holidays. Lowest: "
         + odd_list(low.sort_values("z").head(5)) + ".",
         f"- **Unusually high days** (robust z >= {ROBUST_Z}): {len(high)} days. Highest, with the complaint types "
-        "above their usual level: " + ("; ".join(
+        f"above their usual level (usual = average of the same weekday up to {BASELINE_WEEKS} weeks either side; "
+        "shares are of the day's excess over it and pass 100% when other types run below their usual level): "
+        + ("; ".join(
             f"{_d(r.date)} {r.n:,} vs {r.baseline:,.0f} usual ({r.drivers})" for r in v["sdays"].itertuples(index=False))
             or "none") + ".",
         "- **Surges by month** (at least "
@@ -941,11 +1101,11 @@ def _write_answer(cfg, v):
         f"closings average {dow.close.max():,.0f} on {dow.close.idxmax()}s and {dow.close.min():,.0f} on "
         f"{dow.close.idxmin()}s ({100 * (dow.close.max() / dow.close.min() - 1):.0f}% more).",
         f"- **Week of year.** {week_line}",
-        f"- **What the chart leaves out.** {int(d.incomplete.sum())} possibly incomplete days; closings in the first "
+        *_later_lines(pat, v["later"]),
+        f"- **What the chart leaves out.** {int(d.incomplete.sum())} possibly incomplete days"
+        + (f" and {pat['n_empty']:,} days with no rows at all" if pat["n_empty"] else "") + "; closings in the first "
         f"{pat['warmup']} days (the {CLOSE_WARMUP_QUANTILE:.0%} quantile of time to close), when requests opened "
-        "before the data starts are missing; weeks with any unusable day. "
-        + (f"Averages use full calendar years only ({yrs}); partial years are drawn in gray but not averaged."
-           if pat["full_years"] else f"No full calendar year is in the data, so averages use {yrs} as it is."),
+        "before the data starts are missing; weeks with any unusable day. " + _averages_sentence(pat),
         "" if is_year else f"- **Too short for seasonality.** The data covers {len(d)} days; week-of-year effects "
         "need several years.",
         "",

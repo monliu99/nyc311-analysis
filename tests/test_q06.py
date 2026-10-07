@@ -1,11 +1,12 @@
 """Q6: daily complaint volume and content vs Central Park weather."""
 import re
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
 
-from nyc311 import q06_weather as q6
+from nyc311 import q06_weather as q6, rules
 from nyc311.clean import clean_glob
 
 
@@ -111,6 +112,86 @@ def test_three_synthetic_years_estimate_every_bin_and_event_and_draw_every_figur
     assert len(out["seasonal"]) == 12
 
 
+def test_axis_cap_only_when_a_few_days_dwarf_the_rest():
+    rng = np.random.default_rng(3)
+    regular = pd.Series(rng.poisson(100, 1000))
+    assert q6.axis_cap(regular) is None
+    storm = regular.copy()
+    storm.iloc[[10, 500]] = [15000, 9000]
+    cap = q6.axis_cap(storm)
+    assert cap is not None and regular.max() < cap < 9000
+    assert (storm > cap).sum() == 2
+
+
+def _weather_years(y0, y1, seed=1):
+    """Real Central Park weather for y0..y1 with simulated daily counts (heat rises on cold nights)."""
+    rng = np.random.default_rng(seed)
+    w = q6.load_weather()
+    days = w[w.date.dt.year.between(y0, y1)].reset_index(drop=True)
+    cold = np.clip(50 - days.tmin_f, 0, None)
+    for g in q6.GROUPS:
+        days[g.key] = rng.poisson(50 * np.exp(0.04 * cold) if g.key == "heat" else 100 + 0 * cold)
+    days["total"] = days[[g.key for g in q6.GROUPS]].sum(axis=1) + rng.poisson(3000, len(days))
+    return days
+
+
+def _build(tmp_path, days, **kw):
+    cat = pd.concat([days[["date"]].assign(category="Heat & hot water", n=days.heat),
+                     days[["date"]].assign(category="Everything else", n=days.total - days.heat)])
+    groups = pd.DataFrame({"group": [g.key for g in q6.GROUPS], "label": [g.label for g in q6.GROUPS],
+                           "category": "x", "canonical_type": "y", "n": 1})
+    ex = pd.DataFrame({"step": ["default analysis set", "analyzed"], "rows": [days.total.sum()] * 2})
+    return q6.build(tmp_path, days, cat, groups, ex, **kw)
+
+
+def test_seasonal_profile_averages_full_years_up_to_the_cutoff_and_shows_later_years_apart(tmp_path):
+    """A 2020 summer surge makes June-August the peak over all years; the typical (2016-2019) peak is winter."""
+    days = _weather_years(2016, 2021)
+    days = days[days.date <= "2021-09-22"].reset_index(drop=True)  # 2021 ends early, as on the full data
+    surge = (days.date.dt.year == 2020) & days.date.dt.month.between(6, 8)
+    days.loc[surge, "total"] += 8000
+    out = _build(tmp_path, days, full_years=[2016, 2017, 2018, 2019, 2020])
+    prof, later = out["seasonal"], out["seasonal_later"]
+    typical = days[days.date.dt.year <= rules.PROFILE_LAST_YEAR]
+    jan = typical[typical.date.dt.month == 1].total.mean()
+    assert prof.loc[1, "total"] == pytest.approx(jan)
+    assert days.groupby(days.date.dt.month).total.mean().idxmax() in (6, 7, 8)  # the trap: all years together
+    assert prof.total.idxmax() not in (6, 7, 8)
+    assert sorted(later.year.unique()) == [2020, 2021]
+    assert later[later.year == 2021].month.max() == 9
+    text = (tmp_path / "answers" / "q06.md").read_text()
+    season = text.split("## Seasonal pattern")[1].split("## Limits")[0]
+    month = pd.Timestamp(2000, int(prof.total.idxmax()), 1).strftime("%B")
+    assert f"**All complaints:** peaks in {month}" in season
+    assert "2020" in season and "2021" in season and "2016" in season
+    assert (tmp_path / "figs" / "q06_seasonal_profile.png").exists()
+
+
+def test_volume_chart_key_never_covers_a_dot_and_a_storm_day_does_not_set_the_scale(tmp_path):
+    days = _weather_years(2015, 2017)
+    days.loc[days.prcp_in.idxmax(), "trees"] = 15000  # one storm day
+    days["tmin_bin"], _ = q6.tmin_bins(days.tmin_f)
+    bins = [b for b in days.tmin_bin.cat.categories if (days.tmin_bin == b).any()]
+    fig, capped = q6.volume_figure(days, bins)
+    try:
+        fig.canvas.draw()
+        trees_ax = fig.axes[[g.key for g in q6.GROUPS].index("trees")]
+        assert "trees" in capped and trees_ax.get_ylim()[1] < 15000
+        notes = " ".join(t.get_text() for t in trees_ax.texts)
+        assert "15,000" in notes and q6._d(days.loc[days.prcp_in.idxmax(), "date"]) in notes
+        keys = [t for ax in fig.axes for t in ax.texts if t.get_text() in ("Weekdays", "Weekends & holidays")]
+        assert len(keys) == 2
+        for ax in fig.axes:
+            pts = np.vstack([ax.transData.transform(c.get_offsets()) for c in ax.collections if len(c.get_offsets())])
+            for t in keys:
+                if t.axes is ax:
+                    bb = t.get_window_extent()
+                    inside = (pts[:, 0] >= bb.x0) & (pts[:, 0] <= bb.x1) & (pts[:, 1] >= bb.y0) & (pts[:, 1] <= bb.y1)
+                    assert not inside.any(), t.get_text()
+    finally:
+        plt.close(fig)
+
+
 # ------------------------------------------------------------------ the module on the sample
 @pytest.fixture(scope="module")
 def q6_out(cleaned_cfg):
@@ -136,8 +217,8 @@ def test_daily_totals_reconcile_with_the_clean_table(q6_out, con_src):
     con, src = con_src
     days = q6_out["days"].set_index("date")
     d0 = days.index[0]
-    n = con.sql(f"""select count(*) from {src} where not is_test and not dup_key
-                    and not coalesce(is_info_request, false) and created::date = '{d0.date()}'""").fetchone()[0]
+    n = con.sql(f"""select count(*) from {src} where {rules.COMPLAINTS_SQL}
+                    and created::date = '{d0.date()}'""").fetchone()[0]
     assert days.loc[d0, "total"] == n
     cats = q6_out["category_daily"].groupby("date").n.sum()
     assert (cats.reindex(days.index) == days.total).all()
@@ -149,10 +230,13 @@ def test_daily_totals_reconcile_with_the_clean_table(q6_out, con_src):
 def test_exclusions_reconcile_to_the_default_set(q6_out, con_src):
     con, src = con_src
     ex = q6_out["exclusions"].set_index("step")
-    default = con.sql(f"select count(*) from {src} where not is_test and not dup_key").fetchone()[0]
+    default = con.sql(f"select count(*) from {src} where {rules.BASE_SQL}").fetchone()[0]
     assert ex.loc["default analysis set", "rows"] == default
     assert ex.rows.iloc[1:].sum() == default  # removed steps plus the rows analyzed add back to the default set
     assert ex.loc["analyzed", "rows"] == q6_out["days"].total.sum()
+    invalid = con.sql(f"""select count(*) from {src} where {rules.BASE_SQL} and not coalesce(is_info_request, false)
+                          and category = '{rules.INVALID_CATEGORY}'""").fetchone()[0]
+    assert ex.loc[q6.INVALID_STEP, "rows"] == invalid
 
 
 def test_group_membership_is_listed_and_heat_is_the_heat_category(q6_out):
@@ -190,5 +274,8 @@ def test_outputs_written(q6_out, cleaned_cfg):
     text = (out / "answers" / "q06.md").read_text()
     assert not re.search(r"\bnan\b", text, re.IGNORECASE)
     assert f"{q6_out['days'].total.sum():,}" in text
+    note = text.splitlines()[2]
+    assert note.startswith(f"*Computed by `nyc311/q06_weather.py` from {q6_out['days'].total.sum():,} complaints")
+    assert "write the prose" not in text
     report = (out / "reports" / "q06_weather.txt").read_text()
     assert report.startswith("===== BEGIN q06_weather =====")
