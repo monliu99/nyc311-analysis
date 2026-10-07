@@ -222,8 +222,10 @@ def _register_cb(con, src):
 
 def recovery(con, src):
     """For borough, community district, ZIP and coordinates: present, recovered (by source), or still missing."""
+    # t is read four times, so DuckDB caches it: keep it to the columns used (all columns of 28M rows don't fit).
     df = con.sql(f"""
-        with t as (select c.*, cb.cb_boro_cd, cb.cb_special_cd from {src} c
+        with t as (select c.borough_source, c.cd_source, c.special_area_cd, c.zip_raw, c.zip, c.latitude,
+                          c.longitude, cb.cb_boro_cd, cb.cb_special_cd from {src} c
                    left join q01_cb cb on cb.community_board is not distinct from c.community_board)
         select 'borough' as field,
                case when borough_source = 'reported' then '{NOT_MISSING}'
