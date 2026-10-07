@@ -1,7 +1,7 @@
 # NYC 311 lab (MGT 634, Lab Day 2)
 
 The brief is `brief/Lab_Day_2_Challenge.pdf`: 11 questions on NYC 311 service requests,
-answered from 2,000 JSON batch files (about 23 GB, about 20M rows) that only exist on the
+answered from 2,824 JSON batch files (33.3 GB, 28.24M rows, Jan 1 2010 - Nov 20 2021) that only exist on the
 cluster. Everything runs with one command and reproduces every number.
 
 ```
@@ -16,9 +16,10 @@ python run_all.py --data "/path/to/311_batch_*.json" --work /persistent/path/wor
 |---|---|---|
 | 0 env | Python, package versions, CPUs, RAM, free disk | done |
 | 1 ingest | Checks every file, recovers records from cut-off files, converts JSON to all-text Parquet (only new files) | done |
-| 2 discover | Describes the data's structure (reports `02a`-`02f`) before any question is answered | done; **waiting on cluster run #1** |
-| 3 clean | Typed, flagged Parquet + shared aggregate tables; rules settled from run #1 | not started |
-| Q1-Q11 | One module per question | not started |
+| 2 discover | Describes the data's structure (reports `02a`-`02f`) before any question is answered | done |
+| 3 clean | Typed, flagged Parquet; one streaming pass, so it fits in memory on 28M rows | done |
+| Q1-Q11 | One module per question | done; run 2 reviewed, fixes for run 3 |
+| report | `outputs/report.html`: summary, Q1-Q10 with prose from `report/prose/`, appendix | done |
 
 ## Running on the cluster
 
@@ -149,13 +150,13 @@ states which flagged rows it leaves out. Counts are for the 196,270 local rows.
 | # | Issue | Rows | Decision |
 |---|---|---|---|
 | 1 | Rows created >30 days from their file's median date | 43 local; 422,505 on the cluster | Flag `out_of_file_order`, descriptive only (not excluded). On the full data most are older records (mainly DOB, 2010-2019) backfilled into batches 1930-2088, so they are real requests |
-| 2 | Days partly in files we don't have: after the last date-ordered file's median, the late days of a cut-off file, and the days between the files around a missing batch number (cluster: batch 0010 and 18 batches in 2787-2841) | 24 days on the cluster (Jan 15-18 2010; 23 days Sept-Nov 2021) | Flag `possibly_incomplete_day`; left out of daily trends, shown as caveats. Only date-ordered files (>=50% of rows within 30 days of the median) are used |
+| 2 | Days partly in files we don't have: after the last date-ordered file's median, the late days of a cut-off file, the days between the files around a missing batch number, and every day after the start of a cluster of missing numbers at the end of the pull (at least 3 missing and at least 10% of the numbers from there on; overlapping neighbors there hide single gaps). Cluster: batch 0010 and 18 batches in 2787-2841 | Cluster: Jan 15-18 2010 and Sep 23 - Nov 20 2021 | Flag `possibly_incomplete_day`; left out of daily trends, shown as caveats. Only date-ordered files (>=50% of rows within 30 days of the median) are used |
 | 3 | `closed_date` = 1900-01-01 (DOHMH) | 367 | Set to NULL, flag `closed_placeholder` |
 | 4 | Closed before opened (2,677 DOT closed more than a day early) | 2,921 | Flag `closed_before_created`; no duration |
 | 5 | Close date present (not a placeholder) but status is not Closed | 2,983 | Flag `status_conflict`; durations only for status = Closed |
 | 5b | Closed at the exact second it was opened (DOT, DSNY, DOB mostly) | 8,600 | Flag `closed_at_creation`; Q4 reports medians with and without them |
 | 6 | Test records (`Closed - Testing`, `Draft`) | 6 | Flag `is_test`; left out everywhere |
-| 7 | Any status other than Closed, Cancelled, test, or `Unspecified` (Open, Pending, Assigned, Started, In Progress, Email Sent, Unassigned, ...) | 6,435 local | Flag `unresolved` (Q9) |
+| 7 | Any status other than Closed, Cancelled, test, or `Unspecified` (Open, Pending, Assigned, Started, In Progress, Email Sent, Unassigned, ...) **and no close date**. An open status with a close date (mostly DOT "Pending" rows closed before they were opened) is a `status_conflict`, counted neither open nor closed | 3,452 local | Flag `unresolved` (Q4, Q8, Q9, Q11) |
 | 8 | Opening time exactly midnight (HPD records dates only) | 84,883 | Flag `date_only_created`; durations for these are precise to the day only |
 | 9 | Text that means missing: `Unspecified` (borough, park fields), `UNKNOWN` (channel), `N/A` (facility, location type, descriptor, city) | see `02c` | Set to NULL |
 | 10 | ZIP codes: ZIP+4, `N/A`, `0000`, out-of-state | 157 | Keep NYC 5-digit only (`zip`); original in `zip_raw` |
@@ -172,7 +173,20 @@ One row per raw row. Read with `from nyc311.clean import clean_glob` then `con.s
 - **Where:** `borough` + `borough_source`, `boro_cd` (standard district, e.g. 101 = Manhattan 1) + `cd_source`, `special_area_cd` (parks/airports), `zip`, `zip_raw`, `latitude`, `longitude`, plus the raw address, location and highway/taxi/park text columns.
 - **Flags (boolean):** `dup_key`, `out_of_file_order`, `possibly_incomplete_day`, `is_test`, `unresolved`, `status_conflict`, `closed_placeholder`, `closed_before_created`, `closed_at_creation`, `closed_after_1yr`, `date_only_created`, `date_only_closed`.
 
-Default analysis set: `not is_test and not dup_key`. Daily or weekly trends also drop `possibly_incomplete_day`.
+### Analysis sets and shared rules (one definition each, so totals agree across questions)
+
+- **Requests** (`rules.BASE_SQL`): `not is_test and not dup_key`. Daily or weekly trends also drop
+  `possibly_incomplete_day`.
+- **Complaints** (`rules.COMPLAINTS_SQL`): requests minus information requests and the taxonomy category
+  "Invalid entries" (test records, web-form probes).
+- **Instant closure** (`rules.INSTANT_SQL`): closed at the second of opening, with a time of day. Medians "excluding
+  instant closures" leave these out; date-only rows closed the same date are kept.
+- **Full calendar years** (`clean.full_years`): every day inside the span of date-ordered rows and no day flagged
+  possibly incomplete (cluster: 2011-2020).
+- **Typical profiles** (weekday, week of year, season): full years up to `rules.PROFILE_LAST_YEAR` (2019); 2020 and
+  2021 are shown separately.
+- **Population** (per-resident rates): 2010 Census for days before 2015, 2020 Census from 2015 (Q7, Q8, Q9).
+  Manhattan 5 (Midtown, few residents, many commuters) is flagged and left out of per-resident rankings.
 
 ## Question modules (contract for every `nyc311/qNN_*.py`)
 
@@ -189,7 +203,7 @@ Default analysis set: `not is_test and not dup_key`. Daily or weekly trends also
   (nyt-charts style: `from nyc311 import nytplot as nyt`), small tables in `outputs/agg/qNN_*.csv`, bullet findings
   in `outputs/answers/qNN.md`. Every number in text is computed at run time.
 - **Facts about the full data to design for:** 12 years with a 2020 surge (June-August above 300k/month); late
-  2021 incomplete (24 flagged days); HPD opening times are date-only before about 2015; about 1.04M requests close
+  2021 incomplete (Sep 23 - Nov 20 flagged); HPD opening times are date-only before about 2015; about 1.04M requests close
   at the second they open; 478 raw complaint types (Q3 maps them); a backfilled block of older DOB records.
   Full-run aggregates for reference while building (never read at run time): `cluster_outputs/full/outputs/agg/`.
 - **Tests:** `tests/test_qNN*.py` on the local sample (fixtures in `tests/conftest.py`). Code must run on Python 3.9
