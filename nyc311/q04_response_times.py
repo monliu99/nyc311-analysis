@@ -4,10 +4,11 @@ a) summary statistics and outliers; b) community districts with longer than typi
 for complaint type and year; c) whether agencies differ once complaint type is accounted for (statsmodels on a
 fixed-seed sample). Every number in the report, the charts and outputs/answers/q04.md is computed here.
 
-Complaint set: the default analysis set (not is_test, not dup_key) minus information requests (is_info_request).
-Durations (duration_h) exist only for status Closed and closed >= opened. Parts b) and c) also leave out
-"instant" closures: closed at the second they were opened, with a time of day (likely administrative). Same-day
-closures recorded as dates only (both timestamps midnight, mainly HPD) stay in.
+Complaint set: rules.COMPLAINTS_SQL (not is_test, not dup_key, not an information request, not "Invalid entries").
+Durations (duration_h) exist only for status Closed and closed >= opened. "Excluding instant closures" always means
+rules.INSTANT_SQL: closed at the second they were opened, with a time of day (likely administrative). Same-day
+closures recorded as dates only (both timestamps midnight, mainly HPD) stay in. That set is the response set used
+in b) and c), and its median is the one quoted as "excluding instant closures" everywhere (Q8, Q11 use the same).
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from nyc311 import clean, rules
 from nyc311.clean import clean_glob
 from nyc311.report import Report
 
@@ -35,21 +37,33 @@ MODEL_LABELS = {AGENCY_ONLY: "Agency alone", "complaint type": "Complaint type a
 DEMOGRAPHICS = Path(__file__).resolve().parent.parent / "data" / "external" / "cd_demographics.csv"
 BORO_TITLE = {1: "Manhattan", 2: "Bronx", 3: "Brooklyn", 4: "Queens", 5: "Staten Island"}
 BORO_ABBR = {1: "MN", 2: "BX", 3: "BK", 4: "QN", 5: "SI"}
-COMPLAINTS = "not is_test and not dup_key and not coalesce(is_info_request, false)"
-INSTANT = "closed_at_creation and not date_only_created"
+COMPLAINTS = rules.COMPLAINTS_SQL
+INSTANT = rules.INSTANT_SQL     # kept as a name: Q9 and Q10 import it
+MIN_AGENCY_SHARE = 0.5          # % of the response set an agency needs to be charted and ranked by its median
+DRIVER_K = 3                    # most extreme districts at each end whose gaps are broken down by complaint type
+DRIVER_TYPES = 5                # complaint types listed per district in q04_district_drivers.csv
+DESC_USED_PCT = 5               # a descriptor is part of an agency's work in a type if >= 5% of its closures there
+LIKE_FOR_LIKE_PCT = 50          # a shared type is like-for-like if every agency has >= 50% of its closures in
+                                # descriptors another agency in the type also uses (NULL descriptors never match)
+RESPONSE_SET = "excluding instant closures"
 STAT_SETS = [
     ("all closed complaints", "true"),
-    ("excluding closed at creation", "not closed_at_creation"),
-    ("exact timestamps only", "not date_only_created and not date_only_closed"),
-    ("used in b) and c)", f"not ({INSTANT})"),
+    (RESPONSE_SET, f"not ({INSTANT})"),
+    ("exact timestamps, excluding instant", f"not ({INSTANT}) and not date_only_created and not date_only_closed"),
 ]
 QUANTILES = {"p10_h": 0.10, "p25_h": 0.25, "median_h": 0.50, "p75_h": 0.75, "p90_h": 0.90, "p99_h": 0.99}
 
 
 def fmt_h(h):
-    """Hours as text: hours below two days, days above."""
+    """Hours as text: seconds below a minute, minutes below an hour, hours below two days, days above."""
     if h is None or not np.isfinite(h):
         return "n/a"
+    if h < 1 / 60:
+        s = round(h * 3600)
+        return f"{s:,.0f} second" + ("" if s == 1 else "s")
+    if h < 1:
+        m = round(h * 60)
+        return f"{m:,.0f} minute" + ("" if m == 1 else "s")
     return f"{h:,.1f} hours" if h < 48 else f"{h / 24:,.1f} days"
 
 
@@ -71,12 +85,14 @@ def _pct(x):
 def _load(con, cfg):
     src = clean_glob(cfg)
     excl = con.sql(f"""select count(*) n_rows, count_if(is_test) n_test, count_if(dup_key and not is_test) n_dup,
-                       count_if(not is_test and not dup_key and coalesce(is_info_request, false)) n_info,
+                       count_if({rules.BASE_SQL} and coalesce(is_info_request, false)) n_info,
+                       count_if({rules.BASE_SQL} and not coalesce(is_info_request, false)
+                                and not ({COMPLAINTS})) n_invalid,
                        count_if({COMPLAINTS}) n_complaints from {src}""").df().iloc[0].astype(int)
     con.execute(f"""create or replace temp table q4 as
         select created, year(created) as year, agency, canonical_type, borough, boro_cd, status,
-               closed is null as no_close_date, duration_h, unresolved, closed_before_created, closed_at_creation,
-               closed_after_1yr, date_only_created, date_only_closed
+               closed is null as no_close_date, duration_h, unresolved, status_conflict, closed_before_created,
+               closed_at_creation, closed_after_1yr, date_only_created, date_only_closed
         from {src} where {COMPLAINTS}""")
     con.execute(f"create or replace temp view q4r as select * from q4 where duration_h is not null and not ({INSTANT})")
     return src, excl
@@ -102,8 +118,10 @@ def district_short(cd, names):
 # ---------- a) summary statistics ----------
 
 def _stats_select():
-    qs = ", ".join(f"quantile_cont(duration_h, {q}) as {c}" for c, q in QUANTILES.items())
-    return f"count(*) as n, avg(duration_h) as mean_h, stddev_samp(duration_h) as sd_h, {qs}"
+    # One list-quantile aggregate per set: separate quantile_cont calls each keep their own copy of the values.
+    qs = ", ".join(repr(q) for q in QUANTILES.values())
+    return (f"count(*) as n, avg(duration_h) as mean_h, stddev_samp(duration_h) as sd_h, "
+            f"quantile_cont(duration_h, [{qs}]) as qs")
 
 
 def summary_stats(con):
@@ -112,6 +130,9 @@ def summary_stats(con):
     df = con.sql(" union all ".join(parts)).df()
     df["order"] = df.set.map({name: i for i, (name, _) in enumerate(STAT_SETS)})
     df = df[df.n > 1].sort_values("order").drop(columns="order").reset_index(drop=True)
+    for i, c in enumerate(QUANTILES):
+        df[c] = [float(v[i]) for v in df.qs]
+    df = df.drop(columns="qs")
     for c in ["mean", "median", "sd"]:
         df[f"{c}_d"] = df[f"{c}_h"] / 24
     return df
@@ -143,15 +164,15 @@ def type_outliers(con):
 
 def outliers(con, f, n_dur, tout):
     lo, hi = f["lower_h"], f["upper_h"]
-    c = con.sql(f"""select count_if(duration_h = 0), count_if(duration_h = 0 and date_only_created),
-                    count_if(duration_h = 0 and not date_only_created),
+    c = con.sql(f"""select count_if(duration_h = 0), count_if(closed_at_creation and date_only_created),
+                    count_if({INSTANT}),
                     count_if(duration_h > 0 and duration_h < {lo!r}), count_if(duration_h > {hi!r}),
                     count_if(closed_after_1yr)
                     from q4 where duration_h is not null""").fetchone()
     rows = [
         ("closed at creation (0 hours)", c[0], "closed == opened"),
         ("  0 hours, dates only (closed the same day)", c[1], "both timestamps midnight"),
-        ("  0 hours, exact second with a time of day", c[2], "likely administrative closures"),
+        ("  0 hours, exact second with a time of day", c[2], "instant closures (rules.INSTANT_SQL)"),
         ("below citywide Tukey fence (log scale)", c[3], f"> 0 and < {fmt_h(lo)}"),
         ("above citywide Tukey fence (log scale)", c[4], f"> {fmt_h(hi)}"),
         ("outside own complaint type's fences (log scale)", int(tout.n_below.sum() + tout.n_above.sum()),
@@ -168,6 +189,7 @@ def no_duration_reasons(con):
     df = con.sql("""
         select case when duration_h is not null then 'closed, with a duration'
                     when unresolved then 'still open (unresolved)'
+                    when status_conflict then 'open status but a close date (status_conflict)'
                     when closed_before_created then 'closed before it was opened'
                     when trim(status) = 'Closed' and no_close_date then 'status Closed, no close date'
                     when status is null then 'no status'
@@ -178,24 +200,39 @@ def no_duration_reasons(con):
 
 
 def by_agency(con):
+    """Agencies with >= MIN_N closures. share_pct = the agency's share of the response set (all agencies)."""
     return con.sql(f"""
-        select agency, count(*) n_complaints, count(duration_h) n, 100 * avg(unresolved::int) pct_unresolved,
+        select agency, count(*) n_complaints, count(duration_h) n,
+               count(duration_h) filter (where not ({INSTANT})) n_excl_instant,
+               100 * count(duration_h) filter (where not ({INSTANT})) / (select count(*) from q4r) share_pct,
+               100 * avg(unresolved::int) pct_unresolved,
                avg(duration_h) / 24 mean_d, quantile_cont(duration_h, 0.5) / 24 median_d,
-               quantile_cont(duration_h, 0.5) filter (where duration_h > 0) / 24 median_d_excl_zero,
+               quantile_cont(duration_h, 0.5) filter (where not ({INSTANT})) / 24 median_d_excl_instant,
                stddev_samp(duration_h) / 24 sd_d, quantile_cont(duration_h, 0.9) / 24 p90_d,
-               100 * count_if(duration_h = 0) / count(duration_h) pct_zero_hours,
+               100 * count_if(duration_h is not null and {INSTANT}) / count(duration_h) pct_instant,
                100 * count_if(duration_h is not null and (date_only_created or date_only_closed))
                    / count(duration_h) pct_day_precision
         from q4 group by agency having count(duration_h) >= {MIN_N} order by n desc""").df()
 
 
-def by_year(con):
-    return con.sql("""
+def compared_agencies(a):
+    """The agencies charted and ranked by median: at least MIN_AGENCY_SHARE % of the response set (all of `a` if
+    fewer than two qualify), fastest first by the median excluding instant closures."""
+    shown = a[a.share_pct >= MIN_AGENCY_SHARE]
+    if len(shown) < 2:
+        shown = a
+    return shown.sort_values(["median_d_excl_instant", "agency"]).reset_index(drop=True)
+
+
+def by_year(con, full_years=()):
+    y = con.sql(f"""
         select year, count(*) n_complaints, count(duration_h) n, 100 * avg(unresolved::int) pct_unresolved,
                quantile_cont(duration_h, 0.5) median_h,
-               quantile_cont(duration_h, 0.5) filter (where not closed_at_creation) median_h_excl_zero,
+               quantile_cont(duration_h, 0.5) filter (where not ({INSTANT})) median_h_excl_instant,
                avg(duration_h) mean_h, quantile_cont(duration_h, 0.9) p90_h
         from q4 group by year order by year""").df()
+    y["full_year"] = y.year.isin(list(full_years))
+    return y
 
 
 # ---------- b) neighborhoods ----------
@@ -255,6 +292,71 @@ def borough_table(con):
     b = mix_adjusted(con, "q4r", "borough").rename(columns={"grp": "borough"})
     return b.merge(_unresolved_by(con, "borough"), on="borough", how="left").sort_values(
         "adj_pct", ascending=False).reset_index(drop=True)
+
+
+def gap_drivers(con, rel, group_col, groups):
+    """Each complaint type's contribution to a group's mix-adjusted gap (same benchmark as mix_adjusted).
+
+    A group's log gap G is the mean of e = ln(h + 1) - typical over its closures, so G = sum over types of
+    (n_t / N) * g_t, where g_t is the group's mean gap within type t. contrib_log = n_t * g_t / N (sums to G);
+    share_of_gap_pct = 100 * contrib_log / G; type_adj_pct = 100 * (exp(g_t) - 1); adj_pct_without = the group's
+    gap with type t left out. One row per (group, type), every type, ordered so the types that push the gap in the
+    group's own direction come first.
+    """
+    con.register("q4_driver_groups", pd.DataFrame({"grp": list(groups)}))
+    try:
+        df = con.sql(f"""
+            with r as (select {group_col} as grp, coalesce(canonical_type, '') as ct,
+                              coalesce(year(created), -1) as yr, duration_h, ln(duration_h + 1) as y
+                       from {rel} where duration_h is not null),
+            c as (select ct, yr, avg(y) as cell_y from r group by all),
+            j as (select r.grp, r.ct, r.duration_h, r.y - c.cell_y as e from r join c using (ct, yr)
+                  where r.grp in (select grp from q4_driver_groups)),
+            g as (select grp, count(*) as group_n, sum(e) as group_sum from j group by grp),
+            t as (select grp, ct, count(*) as n, sum(e) as type_sum, quantile_cont(duration_h, 0.5) as median_h
+                  from j group by all),
+            m as (select ct, quantile_cont(duration_h, 0.5) as city_type_median_h from r
+                  where ct in (select ct from t) group by ct)
+            select t.grp, t.ct as canonical_type, t.n, g.group_n, t.median_h, m.city_type_median_h,
+                   t.type_sum / t.n as type_gap, t.type_sum / g.group_n as contrib_log,
+                   g.group_sum / g.group_n as group_gap, g.group_sum, t.type_sum
+            from t join g using (grp) join m using (ct)""").df()
+    finally:
+        con.unregister("q4_driver_groups")
+    df["canonical_type"] = df.canonical_type.replace("", "(no type)")
+    df["pct_of_closures"] = 100 * df.n / df.group_n
+    df["type_adj_pct"] = 100 * np.expm1(df.type_gap)
+    df["group_adj_pct"] = 100 * np.expm1(df.group_gap)
+    df["share_of_gap_pct"] = 100 * df.contrib_log / df.group_gap.where(df.group_gap != 0)
+    rest_n = (df.group_n - df.n).where(df.group_n > df.n)
+    df["adj_pct_without"] = 100 * np.expm1((df.group_sum - df.type_sum) / rest_n)
+    df["_order"] = -np.sign(df.group_gap) * df.contrib_log
+    df = df.sort_values(["grp", "_order", "canonical_type"]).reset_index(drop=True)
+    return df[["grp", "canonical_type", "n", "group_n", "pct_of_closures", "median_h", "city_type_median_h",
+               "type_adj_pct", "contrib_log", "share_of_gap_pct", "group_adj_pct", "adj_pct_without"]]
+
+
+def district_drivers(con, d):
+    """The DRIVER_TYPES complaint types that contribute most to the gap of the DRIVER_K slowest and fastest
+    districts after adjustment (low_n: fewer than MIN_N closures of that type in the district)."""
+    k = min(DRIVER_K, len(d) // 2)
+    cols = ["boro_cd", "district", "side", "rank_adjusted", "canonical_type", "n", "group_n", "low_n",
+            "pct_of_closures", "median_h", "city_type_median_h", "type_adj_pct", "contrib_log", "share_of_gap_pct",
+            "group_adj_pct", "adj_pct_without"]
+    if k == 0:
+        return pd.DataFrame(columns=cols)
+    order = d.sort_values(["adj_pct", "median_h"], ascending=False)
+    side = {**{int(c): "slowest" for c in order.head(k).boro_cd}, **{int(c): "fastest" for c in order.tail(k).boro_cd}}
+    dr = gap_drivers(con, "q4r", "boro_cd", list(side))
+    dr["boro_cd"] = dr.grp.astype(int)
+    dr = dr.groupby("boro_cd", sort=False).head(DRIVER_TYPES)
+    dr["side"] = dr.boro_cd.map(side)
+    lab = d.set_index("boro_cd")
+    dr["district"] = dr.boro_cd.map(lab.district)
+    dr["rank_adjusted"] = dr.boro_cd.map(lab.rank_adjusted)
+    dr["low_n"] = dr.n < MIN_N
+    dr["_s"] = -np.sign(dr.group_adj_pct) * dr.contrib_log  # biggest push in the district's own direction first
+    return dr.sort_values(["rank_adjusted", "_s", "canonical_type"])[cols].reset_index(drop=True)
 
 
 # ---------- c) agencies ----------
@@ -333,10 +435,13 @@ def year_effects(params, years):
     return out
 
 
-def agency_effects(df, resid):
-    """For complaint types that two or more agencies each handle >= MIN_N_SHARED times in the sample: each agency's
-    mean residual (ln scale) from the type + year + borough model, as % faster/slower than typical for the same type."""
+def agency_effects(df, resid, types=None):
+    """For complaint types that two or more agencies each handle >= MIN_N_SHARED times in the sample (and, if `types`
+    is given, only those types: the like-for-like ones): each agency's mean residual (ln scale) from the type + year
+    + borough model, as % faster/slower than typical for the same type."""
     d = pd.DataFrame({"canonical_type": df.canonical_type.to_numpy(), "agency": df.agency.to_numpy(), "e": resid})
+    if types is not None:
+        d = d[d.canonical_type.isin(list(types))]
     cnt = d.groupby(["canonical_type", "agency"]).size().rename("n").reset_index()
     ok = cnt[cnt.n >= MIN_N_SHARED]
     shared = ok.groupby("canonical_type").agency.nunique()
@@ -365,6 +470,35 @@ def agency_coverage(con):
                100 * sum(case when n >= {MIN_N_SHARED} and ct in (select ct from s) then n else 0 end) / sum(n)
                    as pct_volume_in_shared_types
         from a group by agency order by n desc""").df()
+
+
+def descriptor_overlap(con, rel):
+    """Is a complaint type that two or more agencies handle (>= MIN_N_SHARED closures each) the same work?
+
+    `rel` has canonical_type, agency, descriptor (one row per closure). A descriptor is a regular part of an
+    agency's work in a type if >= DESC_USED_PCT % of its closures there carry it. pct_desc_shared = share of the
+    agency's closures whose descriptor is a regular descriptor of another of those agencies (NULL never matches).
+    like_for_like: every agency in the type reaches LIKE_FOR_LIKE_PCT. top_descriptor: the agency's commonest one.
+    """
+    df = con.sql(f"""
+        with r as (select coalesce(canonical_type, '(none)') ct, coalesce(agency, '(none)') agency, descriptor
+                   from {rel}),
+        a as (select ct, agency, count(*) n from r group by all having count(*) >= {MIN_N_SHARED}),
+        s as (select ct from a group by ct having count(*) >= 2),
+        d as (select r.ct, r.agency, r.descriptor, count(*) nd, any_value(a.n) n from r join a using (ct, agency)
+              where r.ct in (select ct from s) group by all),
+        u as (select ct, agency, descriptor from d where descriptor is not null and 100.0 * nd / n >= {DESC_USED_PCT}),
+        m as (select distinct d.ct, d.agency, d.descriptor from d join u
+              on u.ct = d.ct and u.descriptor = d.descriptor and u.agency <> d.agency)
+        select d.ct as canonical_type, d.agency, any_value(d.n) n,
+               100.0 * coalesce(sum(d.nd) filter (where m.ct is not null), 0) / any_value(d.n) pct_desc_shared,
+               first(d.descriptor order by d.nd desc, d.descriptor nulls last) as top_descriptor,
+               100.0 * max(d.nd) / any_value(d.n) as pct_top_descriptor
+        from d left join m on m.ct = d.ct and m.agency = d.agency and m.descriptor is not distinct from d.descriptor
+        group by d.ct, d.agency order by d.ct, n desc""").df()
+    df["like_for_like"] = df.canonical_type.map(df.groupby("canonical_type").pct_desc_shared.min()
+                                                >= LIKE_FOR_LIKE_PCT).astype(bool)
+    return df
 
 
 def within_type(con):
@@ -445,23 +579,25 @@ def chart_districts(d, path, note):
     return nyt.save(fig, path)
 
 
-def chart_agencies(a, v, path, title, note, max_agencies=12):
+def chart_agencies(a, v, path, title, note, col="median_d_excl_instant"):
+    """Top: median days to close for the agencies in `a` (as given: compared_agencies), slowest at the top.
+    Bottom: the variance-explained ladder."""
     from matplotlib.figure import Figure
 
     from nyc311 import nytplot as nyt
 
     nyt.use()
-    a = a.head(max_agencies).sort_values("median_d")
+    a = a.sort_values([col, "agency"])
     fig = Figure(figsize=(7.5, 0.3 * (len(a) + len(v)) + 2.6))
     top, bot = fig.subplots(2, 1, gridspec_kw={"height_ratios": [len(a), len(v) + 0.5]})
-    top.barh(np.arange(len(a)), a.median_d, color=nyt.SAGE.band, height=0.72, zorder=2)
-    for i, (d, h) in enumerate(zip(a.median_d, a.median_d * 24)):
-        _text(top, d + 0.01 * a.median_d.max(), i, fmt_h(h), nyt.SAGE.line, fontsize=9, fontweight="bold")
+    top.barh(np.arange(len(a)), a[col], color=nyt.SAGE.band, height=0.72, zorder=2)
+    for i, d in enumerate(a[col]):
+        _text(top, d + 0.01 * a[col].max(), i, fmt_h(d * 24), nyt.SAGE.line, fontsize=9, fontweight="bold")
     top.set_yticks(np.arange(len(a)), a.agency)
-    top.set_xlim(0, a.median_d.max() * 1.22)
+    top.set_xlim(0, a[col].max() * 1.22)
     _hbar_axes(top, left=True)
     nyt.format_x(top, suffix=" days")
-    nyt.panel_title(top, "Median time to close, by agency")
+    nyt.panel_title(top, "Median time to close, by agency (excluding instant closures)")
 
     order = [AGENCY_ONLY] + NESTED_MODELS
     v = v.set_index("model").loc[[m for m in order if m in set(v.model)]].reset_index()
@@ -500,7 +636,9 @@ def run(cfg):
     outl = outliers(con, f, n_dur, tout)
     nod = no_duration_reasons(con)
     agencies = by_agency(con)
-    years = by_year(con)
+    shown = compared_agencies(agencies)
+    full = clean.full_years(con, src)
+    years = by_year(con, full)
     precision = con.sql("""select 100 * avg((date_only_created or date_only_closed)::int),
                            100 * avg((date_only_created and date_only_closed)::int)
                            from q4 where duration_h is not null""").fetchone()
@@ -510,6 +648,7 @@ def run(cfg):
                                     group by 1 order by n desc limit 4""").df()
 
     districts = district_table(con, names)
+    drivers = district_drivers(con, districts)
     cmp = rank_compare(districts)
     boroughs = borough_table(con)
     n_no_cd = con.sql("select count(*) from q4r where boro_cd is null").fetchone()[0]
@@ -521,28 +660,33 @@ def run(cfg):
     sample_year_n = sample.year.value_counts()
     years["adj_pct_vs_first"] = [yeff.get(str(y)) if sample_year_n.get(str(y), 0) >= MIN_N else np.nan
                                  for y in years.year]
-    effects = agency_effects(sample, resid)
+    overlap = descriptor_overlap(con, f"(select canonical_type, agency, descriptor from {src} where {COMPLAINTS} "
+                                      f"and duration_h is not null and not ({INSTANT}))")
+    effects = agency_effects(sample, resid, types=set(overlap.canonical_type[overlap.like_for_like]))
     coverage = agency_coverage(con)
-    wt = within_type(con)
+    wt = within_type(con).merge(overlap[["canonical_type", "agency", "pct_desc_shared", "top_descriptor",
+                                         "pct_top_descriptor", "like_for_like"]],
+                                on=["canonical_type", "agency"], how="left")
 
     res = {"summary": summary, "fences": f, "outliers": outl, "type_outliers": tout, "no_duration": nod,
            "by_agency": agencies, "by_year": years, "districts": districts, "rank_compare": cmp,
            "boroughs": boroughs, "variance": variance, "agency_effects": effects, "agency_coverage": coverage,
            "within_type": wt, "n_response_set": int(n_resp), "excl": excl, "period": period,
            "period_long": period_l, "precision": precision, "n_instant": int(n_instant),
-           "instant_by_agency": instant_by_agency, "n_no_cd": int(n_no_cd)}
+           "instant_by_agency": instant_by_agency, "n_no_cd": int(n_no_cd), "agency_chart": shown,
+           "district_drivers": drivers, "full_years": full}
 
     agg = cfg.out_dir / "agg"
     agg.mkdir(parents=True, exist_ok=True)
     for name in ["summary", "outliers", "type_outliers", "no_duration", "by_agency", "by_year", "boroughs",
-                 "variance", "agency_effects", "agency_coverage", "within_type"]:
+                 "variance", "agency_effects", "agency_coverage", "within_type", "district_drivers"]:
         res[name].to_csv(agg / f"q04_{name}.csv", index=False)
     districts.drop(columns="short").to_csv(agg / "q04_districts.csv", index=False)
 
     figs = cfg.out_dir / "figs"
     chart_districts(districts, figs / "q04_district_adjusted.png", _district_note(res))
     title, note = _agency_chart_text(res)
-    chart_agencies(agencies, variance, figs / "q04_agency_variance.png", title, note)
+    chart_agencies(shown, variance, figs / "q04_agency_variance.png", title, note)
     _report(cfg, res)
     _write_answer(cfg, res)
     return res
@@ -558,7 +702,7 @@ def _district_note(res):
     shown = f"The {k} slowest and {k} fastest" if len(d) > 2 * k else "All"
     return (f"Note: Difference from the citywide typical time to close (geometric mean) for the same complaint type and "
             f"year. {shown} of {len(d)} community\ndistricts with at least {MIN_N} closed complaints, {res['period']}. "
-            f"Excludes information requests and {res['n_instant']:,} instant (0-second) closures.")
+            f"Complaints only; excludes {res['n_instant']:,} instant (0-second) closures.")
 
 
 def _agency_chart_text(res):
@@ -569,9 +713,15 @@ def _agency_chart_text(res):
     else:
         title = f"Agency explains more of the variation than complaint type: {r2a:.0%} vs. {r2t:.0%}"
     n = int(res["variance"].n.iloc[0])
-    note = (f"Note: Closed complaints, {res['period']}; agencies with at least {MIN_N}. Variation = R\N{SUPERSCRIPT TWO} "
-            f"of log(hours + 1) on a fixed-seed sample of {n:,};\nadding agency to complaint type, year and borough "
-            f"adds {100 * gain:.1f} points.")
+    shown, a = res["agency_chart"], res["by_agency"]
+    if len(shown) < len(a):
+        who = (f"the {len(shown)} agencies with at least {MIN_AGENCY_SHARE:g}% of closures each "
+               f"({len(a) - len(shown)} smaller ones not shown)")
+    else:
+        who = f"agencies with at least {MIN_N} closures"
+    note = (f"Note: Closed complaints, {res['period']}, without {res['n_instant']:,} instant (0-second) closures; "
+            f"{who}.\nVariation = R\N{SUPERSCRIPT TWO} of log(hours + 1) on a fixed-seed sample of {n:,}; adding "
+            f"agency to complaint type, year and borough adds {100 * gain:.1f} points.")
     return title, note
 
 
@@ -579,9 +729,10 @@ def _report(cfg, res):
     rep = Report(STAGE, cfg.out_dir)
     e, s = res["excl"], res["summary"]
     rep.add(f"Q4. Time to closure on {e.n_complaints:,} complaints ({res['period_long']})",
-            f"rows {e.n_rows:,}; left out: is_test {e.n_test:,}, dup_key {e.n_dup:,}, is_info_request {e.n_info:,}",
-            f"b) and c) also leave out {res['n_instant']:,} instant closures (0 s, with a time of day); "
-            f"response set {res['n_response_set']:,}")
+            f"rows {e.n_rows:,}; left out: is_test {e.n_test:,}, dup_key {e.n_dup:,}, is_info_request {e.n_info:,}, "
+            f"category '{rules.INVALID_CATEGORY}' {e.n_invalid:,}",
+            f"instant closures (rules.INSTANT_SQL: 0 s, with a time of day) {res['n_instant']:,}; response set "
+            f"(closed, excluding instant closures; used in b) and c)) {res['n_response_set']:,}")
     rep.table(s[["set", "n", "mean_h", "sd_h", "p10_h", "p25_h", "median_h", "p75_h", "p90_h", "p99_h", "median_d",
                  "mean_d"]], title="a) Time to closure, hours (days at right)")
     f = res["fences"]
@@ -593,7 +744,10 @@ def _report(cfg, res):
                                     "n_above", "pct_outside"]], max_rows=5,
               title="Within-type outliers (own Tukey fences), most above-fence first")
     rep.table(res["no_duration"], max_rows=8, title="Complaints without a duration (closed-only stats are biased)")
-    rep.table(res["by_agency"], max_rows=12, title=f"By agency (>= {MIN_N} closed), days")
+    rep.table(res["by_agency"][["agency", "n", "share_pct", "pct_unresolved", "mean_d", "median_d",
+                                "median_d_excl_instant", "p90_d", "pct_instant", "pct_day_precision"]], max_rows=12,
+              title=f"By agency (>= {MIN_N} closed), days; charted: share_pct >= {MIN_AGENCY_SHARE:g}% of the "
+                    f"response set ({len(res['agency_chart'])} agencies)")
     rep.table(res["by_year"], max_rows=13, title="By year opened (adj_pct_vs_first: same type and borough, sample)")
 
     rep.table(res["boroughs"][["borough", "n", "median_h", "adj_pct", "pct_unresolved"]],
@@ -605,6 +759,12 @@ def _report(cfg, res):
                                               "pct_unresolved"]], max_rows=TOP_K,
               title=f"Slowest {TOP_K} districts after adjustment (rank_raw = rank by raw median)")
     lab = dict(zip(d.boro_cd, d.district))
+    dr = res["district_drivers"]
+    if len(dr):
+        rep.table(dr.groupby("boro_cd", sort=False).head(2)[
+            ["district", "group_adj_pct", "canonical_type", "n", "pct_of_closures", "type_adj_pct", "share_of_gap_pct",
+             "adj_pct_without"]], max_rows=4 * DRIVER_K,
+            title=f"What drives the {DRIVER_K} slowest and fastest districts' gaps (top 2 types each)")
     rep.add(f"rank correlation raw vs adjusted: {cmp['spearman']:.2f}",
             f"in raw top {cmp['k']} only: " + ("; ".join(lab[c] for c in cmp["only_raw"]) or "none"),
             f"in adjusted top {cmp['k']} only: " + ("; ".join(lab[c] for c in cmp["only_adjusted"]) or "none"))
@@ -614,10 +774,12 @@ def _report(cfg, res):
     rep.add(f"agencies with a complaint type another agency also handles: {cov['n_shared']} of {cov['n_agencies']} "
             f"({cov['pct_closures']:.1f}% of closures are in shared types)")
     rep.table(res["agency_effects"], max_rows=10,
-              title="Agency vs typical for the same complaint type, year and borough (shared types only, sample)")
-    rep.table(res["within_type"][["canonical_type", "agency", "n", "first_year", "last_year", "median_h",
-                                  "type_median_h", "pct_vs_type"]], max_rows=10,
-              title="Same complaint type, different agencies (full response set)")
+              title="Agency vs typical for the same complaint type, year and borough (like-for-like types only, "
+                    "sample)")
+    rep.table(res["within_type"][["canonical_type", "agency", "n", "median_h", "pct_vs_type", "top_descriptor",
+                                  "pct_desc_shared", "like_for_like"]], max_rows=10,
+              title=f"Same complaint type, different agencies (like_for_like: each >= {LIKE_FOR_LIKE_PCT}% of "
+                    f"closures in descriptors the other also uses)")
     rep.emit()
 
 
@@ -628,42 +790,172 @@ def _coverage_summary(res):
             "pct_closures": 100 * shared_n / cov.n.sum() if cov.n.sum() else 0.0}
 
 
+def _agency_who(shown):
+    if (shown.share_pct >= MIN_AGENCY_SHARE).all():
+        return (f"the {len(shown)} agencies that each handle at least {MIN_AGENCY_SHARE:g}% of closures (together "
+                f"{shown.share_pct.sum():.1f}%)")
+    return f"the {len(shown)} agencies with at least {MIN_N} closures"
+
+
+def _agency_line(res):
+    a, shown, col = res["by_agency"], res["agency_chart"], "median_d_excl_instant"
+    fast, slow = shown.iloc[0], shown.iloc[-1]
+    lo, hi = shown.sort_values("pct_unresolved").iloc[0], shown.sort_values("pct_unresolved").iloc[-1]
+    small = a[~a.agency.isin(shown.agency)].sort_values([col, "agency"])
+    line = (f"- **By agency** (median excluding instant closures; chart in Q4c). Among {_agency_who(shown)}, the "
+            f"fastest is {fast.agency} at {fmt_h(24 * fast[col])} (n {int(fast.n_excl_instant):,}) and the slowest "
+            f"{slow.agency} at {fmt_h(24 * slow[col])} (n {int(slow.n_excl_instant):,}). Among the same agencies, "
+            f"the share still open ranges from {lo.pct_unresolved:.1f}% ({lo.agency}) to {hi.pct_unresolved:.1f}% "
+            f"({hi.agency}).")
+    if len(small):
+        meds = (f"its median is {fmt_h(24 * small[col].iloc[0])}" if len(small) == 1 else
+                f"their medians run from {fmt_h(24 * small[col].iloc[0])} ({small.agency.iloc[0]}) to "
+                f"{fmt_h(24 * small[col].iloc[-1])} ({small.agency.iloc[-1]})")
+        line += (f" The other {len(small)} agencies with at least {MIN_N} closures ("
+                 f"{int(small.n_excl_instant.sum()):,} closures, {small.share_pct.sum():.1f}%) are too small to rank "
+                 f"with them and are not charted; {meds}.")
+    return line
+
+
+def _year_line(res):
+    y = res["by_year"]
+    big = y[y.n >= MIN_N]
+    full = big[big.full_year]
+    ends = full if len(full) >= 2 else big
+    if len(ends) < 2:
+        only = f" ({int(big.year.iloc[0])})" if len(big) else ""
+        return (f"- **By year.** Only {len(big)} year{only} has at least {MIN_N} closed complaints, so the data "
+                "cannot show a trend.")
+
+    def rel(r1, r0):
+        a1, a0 = r1.adj_pct_vs_first, r0.adj_pct_vs_first
+        return 100 * ((1 + a1 / 100) / (1 + a0 / 100) - 1) if np.isfinite(a1) and np.isfinite(a0) else np.nan
+
+    y0, y1 = ends.iloc[0], ends.iloc[-1]
+    kind = "full calendar years, " if ends is full else ""
+    line = (f"- **By year** ({kind}median excluding instant closures). It went from {fmt_h(y0.median_h_excl_instant)} "
+            f"({int(y0.year)}) to {fmt_h(y1.median_h_excl_instant)} ({int(y1.year)})")
+    r = rel(y1, y0)
+    if np.isfinite(r):
+        line += f"; holding complaint type and borough fixed, {int(y1.year)} closures took {_pct(r)} vs. {int(y0.year)}"
+    pre = ends[ends.year == rules.PROFILE_LAST_YEAR]
+    if len(pre) and int(y0.year) < rules.PROFILE_LAST_YEAR < int(y1.year):
+        p = pre.iloc[0]
+        rp = rel(p, y0)
+        line += (f". To {rules.PROFILE_LAST_YEAR}, the last year before the pandemic, the median went to "
+                 f"{fmt_h(p.median_h_excl_instant)}" + (f" ({_pct(rp)} for the same type and borough)"
+                                                         if np.isfinite(rp) else ""))
+    line += "."
+    last, earlier = big.iloc[-1], big.iloc[:-1]
+    m = earlier.pct_unresolved.median()
+    part = "" if last.full_year else " (a partial year in these data)"
+    if last.pct_unresolved > m:
+        line += (f" {int(last.year)}{part} is {last.pct_unresolved:.1f}% unresolved vs. a median of {m:.1f}% for "
+                 "earlier years: its requests have had less time to close, so its closed-only median is likely "
+                 "biased down.")
+    else:
+        line += (f" {int(last.year)}{part} is {last.pct_unresolved:.1f}% unresolved, no more than earlier years "
+                 f"(median {m:.1f}%), so recent requests are not disproportionately missing from its closed-only "
+                 "median.")
+    return line
+
+
+def _driver_line(res):
+    dr, d = res["district_drivers"], res["districts"].set_index("boro_cd")
+    if dr.empty:
+        return None
+    city = res["summary"].set_index("set").loc[RESPONSE_SET, "median_h"]
+    parts = []
+    for side, pick in [("slowest", 0), ("fastest", -1)]:
+        cds = dr[dr.side == side].sort_values("rank_adjusted").boro_cd.unique()
+        if not len(cds):
+            continue
+        cd = cds[pick]
+        r = d.loc[cd]
+        rel = "below" if r.median_h < city else "above"
+        head = (f"{r.district}, {_pct(r.adj_pct)} (raw median {fmt_h(r.median_h)}, {rel} the median of all closures, "
+                f"{fmt_h(city)})")
+        g = dr[(dr.boro_cd == cd) & ~dr.low_n]
+        if g.empty:
+            parts.append(f"{head}: no complaint type has {MIN_N} closures there")
+            continue
+        t1 = g.iloc[0]
+        txt = (f"{head}: {t1.canonical_type} accounts for {t1.share_of_gap_pct:.0f}% of the gap ({int(t1.n):,} "
+               f"closures, {t1.pct_of_closures:.0f}% of the district's, {_pct(t1.type_adj_pct)} vs. typical for the "
+               f"same type and year); without it the gap would be {_pct(t1.adj_pct_without)}")
+        if len(g) > 1:
+            t2 = g.iloc[1]
+            txt += f"; next is {t2.canonical_type} ({t2.share_of_gap_pct:.0f}%)"
+        parts.append(txt)
+    return ("- **What drives the extremes.** " + ". ".join(parts) + ". A type's share is its part of the district's "
+            "mix-adjusted gap on the log scale (shares above 100% mean other types pull the other way). The "
+            f"{DRIVER_TYPES} largest contributors for each of the {min(DRIVER_K, len(d) // 2)} slowest and fastest "
+            "districts are in `q04_district_drivers.csv`.")
+
+
+def _peer_lines(res):
+    """Bullets on complaint types two agencies share: a speed comparison only where the work is like-for-like."""
+    wt = res["within_type"]
+    like_mask = wt.like_for_like.fillna(False).astype(bool) if len(wt) else pd.Series(dtype=bool)
+    like, unlike = wt[like_mask], wt[~like_mask]
+
+    def who(r):
+        desc = f"'{r.top_descriptor}'" if isinstance(r.top_descriptor, str) else "(no descriptor)"
+        return f"{r.agency} {desc}"
+
+    def types(rows, k=4):
+        groups = list(rows.groupby("canonical_type", sort=False))
+        out = "; ".join(f"{t}: " + ", ".join(f"{who(r)} {fmt_h(r.median_h)} (n {r.n:,}, {_years(r)}; "
+                                              f"{r.pct_desc_shared:.0f}% under shared descriptors)"
+                                              for r in g.itertuples()) for t, g in groups[:k])
+        rest = [t for t, _ in groups[k:]]
+        return out + (f"; also {', '.join(rest)}" if rest else "")
+
+    lines = []
+    if len(like):
+        lines.append(f"- **Direct comparison, like-for-like types:** {types(like)}. Check the years: an agency that "
+                     "handled a type only in some years (renamed agencies, transferred programs) is partly a time "
+                     "comparison.")
+        if len(unlike):
+            lines.append(f"- **Same name, different work (not a benchmark):** {types(unlike)}.")
+    elif len(wt):
+        k = unlike.canonical_type.nunique()
+        where = ("In the one complaint type that two agencies handle" if k == 1 else
+                 f"In each of the {k} complaint types that two agencies handle")
+        lines.append(f"- **No like-for-like agency comparison.** {where}, at least one agency logs mostly descriptors "
+                     "the other does not use, so they look like different services under one name: "
+                     f"{types(unlike)}. The data "
+                     "therefore offer no fair agency-vs-agency speed benchmark; the regression above (what agency "
+                     "adds once complaint type is known) is the best available test of whether agencies differ "
+                     "beyond their complaint mix.")
+    else:
+        lines.append(f"- **No like-for-like agency comparison.** No complaint type is handled by two agencies with at "
+                     f"least {MIN_N_SHARED} closures each.")
+    return {"n_types": int(wt.canonical_type.nunique()), "n_like": int(like.canonical_type.nunique()),
+            "lines": lines}
+
+
 def _write_answer(cfg, res):
     e, s = res["excl"], res["summary"].set_index("set")
     al = s.loc["all closed complaints"]
+    rs = s.loc[RESPONSE_SET] if RESPONSE_SET in s.index else al
+    exact = s.loc[STAT_SETS[2][0]] if STAT_SETS[2][0] in s.index else None
     o = res["outliers"].set_index("kind")
     f = res["fences"]
-    a = res["by_agency"]
-    y = res["by_year"]
+    a, shown = res["by_agency"], res["agency_chart"]
     d, cmp, b = res["districts"], res["rank_compare"], res["boroughs"]
     v = res["variance"].set_index("model").r2
     eff, wt = res["agency_effects"], res["within_type"]
     cov = res.get("coverage_summary") or _coverage_summary(res)
     nod = res["no_duration"].set_index("reason")
     n_open = int(nod.n.get("still open (unresolved)", 0))
-    ex0 = s.loc["excluding closed at creation"] if "excluding closed at creation" in s.index else al
-    exact = s.loc["exact timestamps only"] if "exact timestamps only" in s.index else None
     lab = dict(zip(d.boro_cd, d.district))
     tout = res["type_outliers"]
     top_out = tout.sort_values("pct_outside", ascending=False).head(3)
     inst = res["instant_by_agency"]
-
-    fast, slow = a.sort_values("median_d").iloc[0], a.sort_values("median_d").iloc[-1]
+    col = "median_d_excl_instant"
+    fast, slow = shown.iloc[0], shown.iloc[-1]
     hpd = a.set_index("agency").loc["HPD"] if "HPD" in set(a.agency) else None
-    big_years = y[y.n >= MIN_N]
-    if len(big_years) >= 2:
-        y0, y1 = big_years.iloc[0], big_years.iloc[-1]
-        adj = (f"; holding complaint type and borough fixed, {int(y1.year)} closures took "
-               f"{_pct(y1.adj_pct_vs_first)} vs. {int(y0.year)}" if np.isfinite(y1.adj_pct_vs_first) else "")
-        others = big_years.iloc[:-1].pct_unresolved.median()
-        year_line = (f"- **By year.** Median time to close went from {fmt_h(y0.median_h)} ({int(y0.year)}) to "
-                     f"{fmt_h(y1.median_h)} ({int(y1.year)}){adj}. {int(y1.year)} is still {y1.pct_unresolved:.1f}% "
-                     f"unresolved (median of earlier years {others:.1f}%): requests opened late in the data have had "
-                     "less time to close, so the latest year's closed-only median is biased down.")
-    else:
-        only = f" ({int(big_years.year.iloc[0])})" if len(big_years) else ""
-        year_line = (f"- **By year.** Only {len(big_years)} year{only} has at least {MIN_N} closed complaints, so "
-                     "the data cannot show a trend; rerun on the full data.")
 
     raw_slow = d.sort_values("rank_raw").head(3)
     adj_slow = d.sort_values("rank_adjusted").head(3)
@@ -672,40 +964,39 @@ def _write_answer(cfg, res):
     sig_slow = eff[eff.ci_low > 0]
     gain = v[NESTED_MODELS[-1]] - v[NESTED_MODELS[-2]]
 
-    def dlist(rows, col):
-        return "; ".join(f"{r.district} {_days(r.median_h) if col == 'raw' else _pct(r.adj_pct)}"
+    def dlist(rows, how):
+        return "; ".join(f"{r.district} {_days(r.median_h) if how == 'raw' else _pct(r.adj_pct)}"
                          for r in rows.itertuples())
 
     def elist(rows):
         return "; ".join(f"{r.agency} {_pct(r.pct_vs_typical)} (95% CI {_pct(r.ci_low)} to {_pct(r.ci_high)}, "
                          f"n {r.n_shared:,}; {r.shared_types})" for r in rows.itertuples()) or "none"
 
-    wt_lines = []
-    for t, g in list(wt.groupby("canonical_type", sort=False))[:4]:
-        wt_lines.append(f"{t}: " + ", ".join(f"{r.agency} {fmt_h(r.median_h)} (n {r.n:,}, {_years(r)})"
-                                             for r in g.itertuples()))
+    drivers = _driver_line(res)
+    peer = _peer_lines(res)
     lines = [
         "# Q4. Response times",
         "",
-        f"*Drafted by `nyc311/q04_response_times.py` from {e.n_complaints:,} complaints, {res['period_long']}. "
-        "Every number is computed; write the prose from these bullets.*",
+        f"*Computed by `nyc311/q04_response_times.py` from {e.n_complaints:,} complaints, {res['period_long']}.*",
         "",
         "## Q4a. Summary statistics and outliers",
         "",
         f"- **What is measured.** The data have no first-response time, so the KPI is time to closure (closed minus "
         f"opened), defined only for status Closed with a close date on or after the opening. {int(al.n):,} of "
         f"{e.n_complaints:,} complaints ({100 * al.n / e.n_complaints:.1f}%) have one. Left out: "
-        f"{e.n_info:,} information requests (`is_info_request`), {e.n_test:,} test records (`is_test`), "
-        f"{e.n_dup:,} duplicate keys (`dup_key`).",
+        f"{e.n_info:,} information requests (`is_info_request`), {e.n_invalid:,} invalid entries (category "
+        f"`{rules.INVALID_CATEGORY}`), {e.n_test:,} test records (`is_test`), {e.n_dup:,} duplicate keys (`dup_key`).",
         f"- **Summary.** Mean {fmt_h(al.mean_h)}, median {fmt_h(al.median_h)}, standard deviation {fmt_h(al.sd_h)}; "
         f"10th percentile {fmt_h(al.p10_h)}, 25th {fmt_h(al.p25_h)}, 75th {fmt_h(al.p75_h)}, 90th {fmt_h(al.p90_h)}, "
         f"99th {fmt_h(al.p99_h)}. The mean is {al.mean_h / al.median_h:.1f} times the median: durations are heavily "
         "right-skewed, so the dashboard should report medians and percentiles, not averages.",
         f"- **Zero-hour closures.** {int(o.n.iloc[0]):,} closures ({o.pct.iloc[0]:.1f}%) are at the second of "
-        f"opening: {int(o.n.iloc[2]):,} with a time of day (likely administrative; mostly "
+        f"opening: {int(o.n.iloc[2]):,} with a time of day (instant closures, likely administrative; mostly "
         + ", ".join(f"{r.agency} {r.n:,}" for r in inst.itertuples()) +
-        f") and {int(o.n.iloc[1]):,} same-day closures recorded as dates only. Without all of them the median is "
-        f"{fmt_h(ex0.median_h)} (mean {fmt_h(ex0.mean_h)}).",
+        f") and {int(o.n.iloc[1]):,} same-day closures recorded as dates only, which stay in because they may be "
+        f"real same-day closures. Without the instant closures the median is {fmt_h(rs.median_h)} (mean "
+        f"{fmt_h(rs.mean_h)}, n {int(rs.n):,}); every figure below marked \"excluding instant closures\", and all "
+        "of Q4b and Q4c, use this set.",
         f"- **Outliers.** Tukey fences on log hours (1.5 x IQR) flag {int(o.n.iloc[3]):,} closures under "
         f"{fmt_h(f['lower_h'])} and {int(o.n.iloc[4]):,} over {fmt_h(f['upper_h'])} "
         f"({o.pct.iloc[3] + o.pct.iloc[4]:.1f}% together); {int(o.n.iloc[6]):,} took more than a year. Judged "
@@ -716,30 +1007,29 @@ def _write_answer(cfg, res):
         f"midnight, so they are precise only to the day"
         + (f"; for HPD it is {hpd.pct_day_precision:.1f}%, so HPD's median of {hpd.median_d:.1f} days is a whole "
            "number of days" if hpd is not None else "")
-        + (f". Using only durations with exact timestamps ({int(exact.n):,}), the median is {fmt_h(exact.median_h)}."
-           if exact is not None else "."),
+        + (f". Using only durations with exact timestamps, excluding instant closures ({int(exact.n):,}), the median "
+           f"is {fmt_h(exact.median_h)}." if exact is not None else "."),
         f"- **Unresolved requests bias closed-only numbers.** {n_open:,} complaints "
-        f"({100 * n_open / e.n_complaints:.1f}%) are still open and "
-        f"{e.n_complaints - int(al.n) - n_open:,} more have no usable close date (closed before opened, no date, "
-        "other status). They are missing from every duration statistic, and they are likely the slow ones, so "
-        "closed-only medians understate the true time to closure.",
-        f"- **By agency** (at least {MIN_N} closures): fastest median {fast.agency} {fmt_h(fast.median_d * 24)}, "
-        f"slowest {slow.agency} {fmt_h(slow.median_d * 24)} ({slow.median_d / fast.median_d:.0f} times longer). "
-        f"Share still open ranges from {a.pct_unresolved.min():.1f}% to {a.pct_unresolved.max():.1f}% "
-        f"({a.sort_values('pct_unresolved').iloc[-1].agency} highest).",
-        year_line,
+        f"({100 * n_open / e.n_complaints:.1f}%) are still open (`unresolved`) and "
+        f"{e.n_complaints - int(al.n) - n_open:,} more have no usable close date (an open status with a close date, "
+        "closed before opened, no date, other status). They are missing from every duration statistic; a request "
+        "still open will take at least as long as it has already waited, so closed-only medians likely understate "
+        "the true time to closure.",
+        _agency_line(res),
+        _year_line(res),
         "",
         "## Q4b. Neighborhoods with longer than typical times",
         "",
         f"- **Method.** {len(d)} community districts with at least {MIN_N} closed complaints (special areas such as "
-        f"parks and airports, and unlocated requests: {res['n_no_cd']:,} closures) are left out. Raw ranking: median time to "
-        "close. Adjusted ranking: each closure is compared with the citywide typical time (geometric mean of hours "
-        "+ 1) for the same complaint type and year, and the district's average gap is reported as % longer or "
+        f"parks and airports, and unlocated requests: {res['n_no_cd']:,} closures, are left out). Raw ranking: median "
+        "time to close. Adjusted ranking: each closure is compared with the citywide typical time (geometric mean of "
+        "hours + 1) for the same complaint type and year, and the district's average gap is reported as % longer or "
         "shorter. Instant closures are left out.",
         f"- **Raw medians** put {dlist(raw_slow, 'raw')} slowest.",
         f"- **After adjusting for complaint mix,** the slowest are {dlist(adj_slow, 'adj')}; the fastest are "
         f"{dlist(adj_fast, 'adj')}. Districts' adjusted gaps range from {_pct(d.adj_pct.min())} to "
         f"{_pct(d.adj_pct.max())}.",
+        *([drivers] if drivers else []),
         f"- **Where the rankings disagree.** Rank correlation {cmp['spearman']:.2f}. In the raw top {cmp['k']} only: "
         + ("; ".join(lab[c] for c in cmp["only_raw"]) or "none") + f". In the adjusted top {cmp['k']} only: "
         + ("; ".join(lab[c] for c in cmp["only_adjusted"]) or "none") + ". Districts that are slow only on raw "
@@ -754,8 +1044,8 @@ def _write_answer(cfg, res):
         "",
         "## Q4c. Agencies: faster, or easier complaints?",
         "",
-        f"- **Raw gap.** Agency medians range from {fmt_h(fast.median_d * 24)} ({fast.agency}) to "
-        f"{fmt_h(slow.median_d * 24)} ({slow.agency}).",
+        f"- **Raw gap.** Among {_agency_who(shown)}, median time to close (excluding instant closures) ranges from "
+        f"{fmt_h(24 * fast[col])} ({fast.agency}) to {fmt_h(24 * slow[col])} ({slow.agency}).",
         f"- **Complaint type explains {'more' if v['complaint type'] >= v[AGENCY_ONLY] else 'less'} than agency.** "
         f"On a fixed-seed sample of {int(res['variance'].n.iloc[0]):,} closures, a regression of log(hours + 1) on "
         f"agency alone explains {v[AGENCY_ONLY]:.1%} of the variation; complaint type alone explains "
@@ -768,16 +1058,16 @@ def _write_answer(cfg, res):
         "",
         f"- **Most agencies cannot be benchmarked against another agency.** Only {cov['n_shared']} of "
         f"{cov['n_agencies']} agencies handle a complaint type that another agency also handles (at least "
-        f"{MIN_N_SHARED} closures each); those shared types are {cov['pct_closures']:.1f}% of closures. For every "
+        f"{MIN_N_SHARED} closures each); those shared types are {cov['pct_closures']:.1f}% of closures, and the "
+        f"agencies log the same kinds of request in {peer['n_like']} of {peer['n_types']} shared "
+        f"type{'' if peer['n_types'] == 1 else 's'} (each has at least {LIKE_FOR_LIKE_PCT}% of its closures under "
+        "descriptors the other also uses regularly). For every "
         "other agency, 'exemplary' can only mean fast relative to its own complaint mix (its trend over time or its "
         "own targets), not faster than a peer.",
-        "- **Where two agencies do the same work** (vs typical for the same type, year and borough; sample): "
-        "faster: " + elist(sig_fast) + "; slower: " + elist(sig_slow) + ". A shared type can still hide "
-        "different work (one agency may close by referral, or a merged type may cover two programs), so check the "
-        "descriptors before calling an agency exemplary.",
-        "- **Direct comparison, same complaint type:** " + "; ".join(wt_lines) + ". Check the years: an agency "
-        "that handled a type only in some years (renamed agencies, transferred programs) is partly a time "
-        "comparison.",
+        *([("- **Where two agencies do the same work** (like-for-like types; vs typical for the same type, year and "
+            "borough; sample): faster: " + elist(sig_fast) + "; slower: " + elist(sig_slow) + ".")]
+          if peer["n_like"] else []),
+        *peer["lines"],
         "- **Caveats.** Closure time measures when the ticket was closed, not whether the problem was fixed; "
         "agencies differ in when they close tickets (instant and date-only closures above). The comparisons are "
         "associations, not causes; the confidence intervals ignore clustering, so treat small gaps as noise.",

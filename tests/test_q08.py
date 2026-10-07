@@ -11,9 +11,10 @@ import pandas as pd
 import pytest
 
 from nyc311 import q08_dashboard as q8
+from nyc311 import rules
 from nyc311.clean import clean_glob
 
-COMPLAINTS = "not is_test and not dup_key and not coalesce(is_info_request, false)"
+COMPLAINTS = rules.COMPLAINTS_SQL
 
 
 @pytest.fixture(scope="module")
@@ -97,6 +98,17 @@ def test_popup_escapes_text_and_suppresses_thin_medians():
     assert "&lt;Lower East Side&gt;" in html and "Noise &amp; stuff" in html
     assert "50" in html and "12.3" in html and "fewer than" in html
     assert "40%" not in html  # adjusted gap hidden below MIN_N closed complaints
+    assert "all 59 districts" in html and "(city " not in html  # totals cover the districts, not the city
+
+
+def test_unresolved_caveat_follows_the_numbers():
+    base = {"days": 30, "label": "Aug 24\N{EN DASH}Sep 22, 2021", "n_recent": 1000, "n_before": 50000}
+    lower = q8.unresolved_caveat({**base, "pct_recent": 1.4, "pct_before": 3.0})
+    assert "1.4%" in lower and "3.0%" in lower and "less time to close" not in lower and "not higher" in lower
+    higher = q8.unresolved_caveat({**base, "pct_recent": 9.0, "pct_before": 3.0})
+    assert "9.0%" in higher and "3.0%" in higher and "less time to close" in higher
+    none = q8.unresolved_caveat({**base, "n_before": 0, "pct_recent": 2.0, "pct_before": float("nan")})
+    assert "too short" in none and "nan" not in none
 
 
 # ------------------------------------------------------------------ the sample run
@@ -141,7 +153,7 @@ def test_rates_are_complaints_over_resident_years(res):
 def test_mix_adjusted_gap_matches_an_independent_pandas_computation(res, cleaned_cfg):
     con, src = _con_src(cleaned_cfg)
     r = con.sql(f"""select boro_cd, coalesce(canonical_type, '') ct, year(created) yr, duration_h from {src}
-                    where {COMPLAINTS} and duration_h is not null and not (closed_at_creation and not date_only_created)
+                    where {COMPLAINTS} and duration_h is not null and not ({rules.INSTANT_SQL})
                     and created::date in {_complete_days_sql().format(src=src)}""").df()
     r["y"] = np.log(r.duration_h + 1)
     r["e"] = r.y - r.groupby(["ct", "yr"]).y.transform("mean")  # benchmark cells include rows with no district
@@ -152,6 +164,44 @@ def test_mix_adjusted_gap_matches_an_independent_pandas_computation(res, cleaned
     assert np.allclose(d.adj_pct.reindex(adj.index), adj, atol=1e-6)
     assert np.allclose(d.median_days.reindex(med.index), med, atol=1e-9)
     assert (d.n_closed.reindex(adj.index) == g.size()).all()
+
+
+def test_recent_vs_earlier_unresolved_is_computed(res, cleaned_cfg):
+    ru, win = res["recent_unresolved"], res["point_info"]["window_days"]
+    w0 = min(win)
+    sql = (f"select count(*), count_if(unresolved) from {{src}} where {COMPLAINTS} and boro_cd is not null "
+           f"and created::date in {_complete_days_sql()} and created::date {{op}} DATE '{w0}'")
+    con, src = _con_src(cleaned_cfg)
+    n_r, u_r = con.sql(sql.format(src=src, op=">=")).fetchone()
+    n_b, u_b = con.sql(sql.format(src=src, op="<")).fetchone()
+    assert (ru["n_recent"], ru["n_before"]) == (n_r, n_b)
+    assert ru["pct_recent"] == pytest.approx(100 * u_r / n_r)
+    assert (n_b == 0 and np.isnan(ru["pct_before"])) or ru["pct_before"] == pytest.approx(100 * u_b / n_b)
+    text = (cleaned_cfg.out_dir / "answers" / "q08.md").read_text()
+    assert q8.unresolved_caveat(ru) in text
+    assert "the share unresolved is higher for recent complaints" not in text
+
+
+def test_window_end_and_later_incomplete_days_are_computed(res, cleaned_cfg):
+    p = res["point_info"]
+    end = _one(cleaned_cfg, "select max(created::date) from {src} where not is_test and not dup_key "
+                            "and not out_of_file_order")
+    assert p["data_end"] == end and max(p["window_days"]) <= end
+    after = _one(cleaned_cfg, f"select count(distinct created::date) from {{src}} where not is_test and not dup_key "
+                              f"and not out_of_file_order and created::date > DATE '{max(p['window_days'])}'")
+    assert p["n_days_after"] == after
+    text = (cleaned_cfg.out_dir / "answers" / "q08.md").read_text()
+    if after:
+        assert q8.fmt_date(end) in text and q8.fmt_date(max(p["window_days"])) in text
+
+
+def test_district_totals_are_labeled_as_districts_not_city(res, cleaned_cfg):
+    d = res["districts"]
+    text = (cleaned_cfg.out_dir / "answers" / "q08.md").read_text()
+    assert "(city " not in text and "City rate" not in text
+    assert f"all {len(d)} districts" in text
+    top = d.sort_values("rank").iloc[0]
+    assert f"all {len(d)} districts: {res['city']['pct_unresolved']:.1f}%" in res["popups"][int(top.boro_cd)]
 
 
 def test_themes_are_the_largest_real_categories(res, cleaned_cfg):
@@ -301,6 +351,9 @@ def test_report_block_and_findings(res, cleaned_cfg):
     assert len(summary) == 59 and summary.n.sum() == res["districts"].n.sum()
     text = (out / "answers" / "q08.md").read_text()
     assert text.splitlines()[0].startswith("# Q8")
+    first = text.splitlines()[2]
+    assert first.startswith("*Computed by `nyc311/q08_dashboard.py` from ") and first.endswith(".*")
+    assert res["period_long"] in first and "prose" not in first.lower()
     assert f"{int(res['districts'].n.sum()):,}" in text and f"{len(res['points']):,}" in text
     top = res["districts"].sort_values("rank").iloc[0]
     assert top.cd_name in text and q8.fmt_rate(top.rate) in text
