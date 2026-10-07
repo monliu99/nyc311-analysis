@@ -111,6 +111,12 @@ def _register(con, name, df, int_cols=()):
     con.register(name, df)
 
 
+def _raw_rows(cfg):
+    """The raw Parquet plus the part file and row number, which together identify each raw row."""
+    path = ingest.raw_glob(cfg).replace("'", "''")
+    return f"read_parquet('{path}', union_by_name=true, filename=true, file_row_number=true)"
+
+
 def run(cfg):
     from nyc311 import taxonomy
 
@@ -132,15 +138,55 @@ def run(cfg):
     inc["d"] = pd.to_datetime(inc.d)
     _register(con, "incomplete", inc)
 
+    # Everything that needs all rows at once (file medians, duplicate keys, coordinates to place, the usual
+    # borough of each ZIP) is computed first from a few columns. The full-width pass below then only joins
+    # small tables, so it streams to Parquet instead of holding all rows in memory.
+    con.execute(f"create or replace temp table file_med as "
+                f"select _file, quantile_disc({CR}, 0.5) med from {raw} r group by 1")
+    rows = _raw_rows(cfg)
+    con.execute(f"""
+        create or replace temp table dup_rows as
+        select filename, file_row_number from (
+            select filename, file_row_number,
+                   row_number() over (partition by unique_key order by _file, filename, file_row_number) rn
+            from {rows} semi join (select unique_key from {raw} group by 1 having count(*) > 1) k
+            using (unique_key))
+        where rn > 1""")
+    pts = con.sql(f"""
+        select distinct lat as latitude, lon as longitude from (
+            select try_cast(r.latitude as double) lat, try_cast(r.longitude as double) lon from {raw} r
+            left join cb_lookup cb on cb.community_board = r.community_board where cb.cb_boro_cd is null)
+        where lat is not null and lon is not null""").df()
+    pts["geo_cd"] = geo.assign_districts(pts.latitude, pts.longitude) if geo.DISTRICTS_GEOJSON.exists() else None
+    _register(con, "geo_lookup", pts, int_cols=["geo_cd"])
+    con.execute(f"""
+        create or replace temp table zip_boro as
+        select zip, arg_max(b, n) as zip_borough from (
+            select z.zip, {_nullif('r.borough', rules.NULL_IF['borough'])} b, count(*) n
+            from {raw} r join zip_lookup z on z.incident_zip = r.incident_zip group by all)
+        where zip is not null and b is not null group by zip""")
+
     text = ",\n".join(f"{_nullif('r.' + c, rules.NULL_IF[c]) if c in rules.NULL_IF else 'r.' + c} as {c}"
                       for c in TEXT_COLUMNS)
     ph = rules.PLACEHOLDER_YEAR
+    geo_boro = "case cast(g.geo_cd // 100 as int) " + " ".join(
+        f"when {k} then '{v}'" for k, v in BORO_NAME.items()) + " end"
     con.execute(f"""
-        create or replace temp table c as
-        with r00 as (select *, {CR.replace('r.', '')} cr, try_cast(closed_date as timestamp) cl0,
-                            try_cast(due_date as timestamp) du0 from {raw}),
-        r0 as (select *, case when year(cl0) = {ph} then null else cl0 end cl from r00),
-        m as (select _file, quantile_disc(cr, 0.5) med from r0 group by 1)
+        copy (
+        select c.* exclude (borough_reported, cb_borough, cb_boro_cd, cb_special_cd),
+               coalesce(c.borough_reported, c.cb_borough, {geo_boro}, zb.zip_borough) as borough,
+               case when c.borough_reported is not null then 'reported'
+                    when c.cb_borough is not null then 'community_board'
+                    when g.geo_cd is not null then 'latlon'
+                    when zb.zip_borough is not null then 'zip' end as borough_source,
+               coalesce(c.cb_boro_cd, case when c.cb_special_cd is null and g.geo_cd % 100 <= 18
+                                           then g.geo_cd end) as boro_cd,
+               case when c.cb_boro_cd is not null then 'community_board'
+                    when c.cb_special_cd is null and g.geo_cd % 100 <= 18 then 'latlon' end as cd_source,
+               coalesce(c.cb_special_cd, case when c.cb_boro_cd is null and g.geo_cd % 100 > 18
+                                              then g.geo_cd end) as special_area_cd,
+               coalesce(c.duration_h > {rules.LONG_DURATION_HOURS}, false) as closed_after_1yr
+        from (
         select r.unique_key, r._file,
                r.cr as created,
                r.cl as closed,
@@ -164,40 +210,18 @@ def run(cfg):
                {_in('r.status', rules.TEST_STATUSES)} as is_test,
                {unresolved_sql('r.status')} as unresolved,
                coalesce(r.cl is not null and trim(r.status) <> 'Closed', false) as status_conflict,
-               row_number() over (partition by r.unique_key order by r._file) > 1 as dup_key,
+               d.file_row_number is not null as dup_key,
                case when trim(r.status) = 'Closed' and r.cl >= r.cr
                     then date_diff('second', r.cr, r.cl) / 3600.0 end as duration_h
-        from r0 r join m using (_file)
+        from (select *, case when year(cl0) = {ph} then null else cl0 end cl from
+                (select *, {CR.replace('r.', '')} cr, try_cast(closed_date as timestamp) cl0,
+                        try_cast(due_date as timestamp) du0 from {rows})) r
+        join file_med m using (_file)
         left join cb_lookup cb on cb.community_board = r.community_board
         left join zip_lookup z on z.incident_zip = r.incident_zip
-        left join tax_lookup t on t.complaint_type = r.complaint_type""")
-
-    pts = con.sql("""select distinct latitude, longitude from c
-                     where cb_boro_cd is null and latitude is not null and longitude is not null""").df()
-    pts["geo_cd"] = geo.assign_districts(pts.latitude, pts.longitude) if geo.DISTRICTS_GEOJSON.exists() else None
-    _register(con, "geo_lookup", pts, int_cols=["geo_cd"])
-    con.execute("""create or replace temp table zip_boro as
-                   select zip, arg_max(b, n) as zip_borough from
-                   (select zip, borough_reported b, count(*) n from c
-                    where zip is not null and borough_reported is not null group by all) group by zip""")
-    geo_boro = "case cast(g.geo_cd // 100 as int) " + " ".join(
-        f"when {k} then '{v}'" for k, v in BORO_NAME.items()) + " end"
-    con.execute(f"""
-        copy (
-        select c.* exclude (borough_reported, cb_borough, cb_boro_cd, cb_special_cd),
-               coalesce(c.borough_reported, c.cb_borough, {geo_boro}, zb.zip_borough) as borough,
-               case when c.borough_reported is not null then 'reported'
-                    when c.cb_borough is not null then 'community_board'
-                    when g.geo_cd is not null then 'latlon'
-                    when zb.zip_borough is not null then 'zip' end as borough_source,
-               coalesce(c.cb_boro_cd, case when c.cb_special_cd is null and g.geo_cd % 100 <= 18
-                                           then g.geo_cd end) as boro_cd,
-               case when c.cb_boro_cd is not null then 'community_board'
-                    when c.cb_special_cd is null and g.geo_cd % 100 <= 18 then 'latlon' end as cd_source,
-               coalesce(c.cb_special_cd, case when c.cb_boro_cd is null and g.geo_cd % 100 > 18
-                                              then g.geo_cd end) as special_area_cd,
-               coalesce(c.duration_h > {rules.LONG_DURATION_HOURS}, false) as closed_after_1yr
-        from c left join geo_lookup g using (latitude, longitude) left join zip_boro zb using (zip)
+        left join tax_lookup t on t.complaint_type = r.complaint_type
+        left join dup_rows d on d.filename = r.filename and d.file_row_number = r.file_row_number
+        ) c left join geo_lookup g using (latitude, longitude) left join zip_boro zb using (zip)
         ) to '{clean_path(cfg).as_posix().replace("'", "''")}' (format parquet, compression zstd)""")
     _report(con, cfg)
 
