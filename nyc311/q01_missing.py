@@ -23,6 +23,10 @@ STAGE = "q01_missing"
 APPLIES_MIN_FILL = 0.05     # a complaint type uses a column if it fills it for at least 5% of its rows
 SMALL_TYPE_ROWS = 100       # types smaller than this get a noisy applicability call (reported, not dropped)
 MIN_PERIOD_ROWS = 500       # periods with fewer rows are left out of the time table (stray backfilled rows)
+MIN_SHOWN_PCT = 0.05        # a time measure that never reaches this (shows as 0.0%) is listed by name, not tabled
+# No community district: neither a standard district nor a park/airport area (parks and airports are explained,
+# not missing). Over all rows of the clean table. Q11 imports this so both report the same share.
+NO_DISTRICT_SQL = "boro_cd is null and special_area_cd is null"
 DATE_COLUMNS = ("created_date", "closed_date", "due_date", "resolution_action_updated_date")
 ZIP_COLUMN = "incident_zip"
 PARTIAL_PATTERNS = {"community_board": "unspecified %"}  # 'Unspecified QUEENS': borough known, district missing
@@ -49,6 +53,8 @@ MISSING_KINDS = [KIND_NULL, KIND_EMPTY, KIND_TOKEN, KIND_DATE, KIND_PARTIAL, KIN
 
 NOT_MISSING = "present in raw data"
 STILL_MISSING = "still missing"
+PARK_CODE = "park/airport code in community_board (not a district)"
+PARK_COORDS = "coordinates fall in a park/airport area"
 
 PERIOD_MEASURES = {  # clean-table expression (true = missing) -> label; denominators in _period_sql
     "pct_borough_raw": "borough missing in raw",
@@ -147,7 +153,7 @@ def _encoding_text(e, k=3):
         items.append(f"+{len(ph) - k} more ({int(ph.n.iloc[k:].sum()):,})")
     z = e[e.kind == KIND_ZIP]
     if len(z):
-        items.append(f"invalid ZIP {int(z.n.sum()):,} ({len(z)} values, e.g. {', '.join(z.value.head(2))})")
+        items.append(f"invalid ZIP {int(z.n.sum()):,} ({len(z):,} values, e.g. {', '.join(z.value.head(2))})")
     d = e[e.kind == KIND_DATE_ONLY]
     if len(d):
         items.append(f"date only {int(d.n.sum()):,} (not counted)")
@@ -225,7 +231,7 @@ def recovery(con, src):
     # t is read four times, so DuckDB caches it: keep it to the columns used (all columns of 28M rows don't fit).
     df = con.sql(f"""
         with t as (select c.borough_source, c.cd_source, c.special_area_cd, c.zip_raw, c.zip, c.latitude,
-                          c.longitude, cb.cb_boro_cd, cb.cb_special_cd from {src} c
+                          c.longitude, cb.cb_boro_cd, cb.cb_special_cd, ({NO_DISTRICT_SQL}) as no_district from {src} c
                    left join q01_cb cb on cb.community_board is not distinct from c.community_board)
         select 'borough' as field,
                case when borough_source = 'reported' then '{NOT_MISSING}'
@@ -235,11 +241,11 @@ def recovery(con, src):
                     else '{STILL_MISSING}' end as status, count(*)::bigint as n from t group by all
         union all
         select 'community district',
-               case when cb_boro_cd is not null then '{NOT_MISSING}'
-                    when cb_special_cd is not null then 'park/airport code in community_board (not a district)'
+               case when no_district then '{STILL_MISSING}'
+                    when cb_boro_cd is not null then '{NOT_MISSING}'
+                    when cb_special_cd is not null then '{PARK_CODE}'
                     when cd_source = 'latlon' then 'recovered: coordinates (district polygon)'
-                    when special_area_cd is not null then 'coordinates fall in a park/airport area'
-                    else '{STILL_MISSING}' end, count(*)::bigint from t group by all
+                    else '{PARK_COORDS}' end, count(*)::bigint from t group by all
         union all
         select 'zip',
                case when zip_raw is null or trim(zip_raw) = '' then '{STILL_MISSING}: NULL in raw'
@@ -266,6 +272,12 @@ def period_unit(con, src):
     return "year" if span >= 730 else "month" if span >= 90 else "week"
 
 
+def data_period(con, src):
+    """First and last opening date of the in-order rows (not out_of_file_order), as dates; (None, None) if none."""
+    return con.sql(f"""select min(created)::date, max(created)::date from {src}
+                       where created is not null and not out_of_file_order""").fetchone()
+
+
 def period_sql(unit, col="created"):
     if unit == "year":
         return f"strftime({col}, '%Y')"
@@ -285,7 +297,7 @@ def by_period(con, src, unit):
                {pct("borough_source is distinct from 'reported'")} as pct_borough_raw,
                {pct("borough is null")} as pct_borough_after,
                {pct("cb_boro_cd is null and cb_special_cd is null")} as pct_district_raw,
-               {pct("boro_cd is null and special_area_cd is null")} as pct_district_after,
+               {pct(NO_DISTRICT_SQL)} as pct_district_after,
                {pct("zip is null")} as pct_zip,
                {pct("latitude is null or longitude is null")} as pct_coords,
                {pct("address_type is null or trim(address_type) = ''")} as pct_address_type,
@@ -299,26 +311,59 @@ def by_period(con, src, unit):
     return df[df.n >= MIN_PERIOD_ROWS].reset_index(drop=True), int(small.n.sum()), len(small)
 
 
+DROP_COLUMNS = ["measure", "first_period", "first_pct", "last_period", "last_pct", "max_pct", "max_period",
+                "drop_from", "rise_from"]
+
+
+def _stays_from(s, cond):
+    """First period (after the first) from which cond holds for every later period, else None."""
+    ok = cond.to_numpy()
+    for i in range(1, len(s)):
+        if ok[i:].all():
+            return s.index[i]
+    return None
+
+
 def lasting_drops(t):
-    """Per measure: first and last period, and the first period from which it stays below half its first value."""
+    """Per measure: first, last and peak period, and the first period from which it stays below half
+    (drop_from) or at least double (rise_from) its first value."""
     rows = []
     if t.empty:
-        return pd.DataFrame(columns=["measure", "first_period", "first_pct", "last_period", "last_pct", "drop_from"])
+        return pd.DataFrame(columns=DROP_COLUMNS)
     for c, label in PERIOD_MEASURES.items():
+        if c not in t.columns:
+            continue
         s = t.set_index("period")[c].dropna()
         if s.empty:
             continue
-        drop = None
-        if s.iloc[0] > 0:
-            below = (s < s.iloc[0] / 2).to_numpy()
-            for i in range(1, len(s)):
-                if below[i:].all():
-                    drop = s.index[i]
-                    break
-        rows.append({"measure": label, "first_period": s.index[0], "first_pct": s.iloc[0],
+        first = s.iloc[0]
+        drop = _stays_from(s, s < first / 2) if first > 0 else None
+        rise = _stays_from(s, s >= 2 * first) if first > 0 else None
+        rows.append({"measure": label, "first_period": s.index[0], "first_pct": first,
                      "last_period": s.index[-1], "last_pct": s.iloc[-1], "max_pct": s.max(),
-                     "max_period": s.idxmax(), "drop_from": drop})
-    return pd.DataFrame(rows)
+                     "max_period": s.idxmax(), "drop_from": drop, "rise_from": rise})
+    return pd.DataFrame(rows, columns=DROP_COLUMNS)
+
+
+def _change(r, unit):
+    for col, word in [("drop_from", "below half"), ("rise_from", "above double")]:
+        p = r[col]
+        if isinstance(p, str):
+            return f"{word} in {p} only (last {unit})" if p == r["last_period"] else f"{word} from {p}"
+    return "none"
+
+
+def time_table(drops, unit):
+    """Rows for the over-time table, and the measures too small to show (below MIN_SHOWN_PCT in every period)."""
+    tiny = drops[drops.max_pct < MIN_SHOWN_PCT]
+    shown = drops[drops.max_pct >= MIN_SHOWN_PCT]
+    tab = pd.DataFrame({
+        "field": shown.measure.values,
+        f"first {unit}": [f"{p}: {_f(x)}" for p, x in zip(shown.first_period, shown.first_pct)],
+        f"last {unit}": [f"{p}: {_f(x)}" for p, x in zip(shown.last_period, shown.last_pct)],
+        "peak": [f"{p}: {_f(x)}" for p, x in zip(shown.max_period, shown.max_pct)],
+        "lasting change": [_change(r, unit) for _, r in shown.iterrows()]})
+    return tab, tiny.measure.tolist()
 
 
 # ---------------------------------------------------------------- run
@@ -339,6 +384,7 @@ def run(cfg):
     small_types = int(app[app.column == columns[0]].n_type_rows.lt(SMALL_TYPE_ROWS).sum()) if columns else 0
     rec = recovery(con, src)
     unit = period_unit(con, src)
+    first_day, last_day = data_period(con, src)
     per, n_small_rows, n_small_periods = by_period(con, src, unit)
     drops = lasting_drops(per)
 
@@ -351,6 +397,7 @@ def run(cfg):
     per.assign(period_unit=unit).to_csv(agg / "q01_by_period.csv", index=False)
 
     v = dict(cols=cols, enc=enc, app=app, rec=rec, per=per, drops=drops, unit=unit, n_rows=n_rows,
+             first_day=first_day, last_day=last_day,
              n_types=n_types, small_types=small_types, n_small_rows=n_small_rows, n_small_periods=n_small_periods)
     _report(cfg, v)
     _write_answer(cfg, v)
@@ -375,6 +422,7 @@ def _report(cfg, v):
             f"- {v['small_types']} of {v['n_types']} complaint types have < {SMALL_TYPE_ROWS} rows; their "
             "applicability call is noisy (all rows: agg/q01_applicability.csv)")
     rep.table(rec, max_rows=30, title="Location fields: present, recovered by cleaning, still missing")
+    rep.add(f"(community district still missing = {NO_DISTRICT_SQL}, over all rows; parks/airports are not missing)")
     t = per.rename(columns={c: c.replace("pct_", "") for c in PERIOD_MEASURES})
     rep.table(t, max_rows=40, title=f"Missing % by {v['unit']} of opening (key fields)")
     if v["n_small_periods"]:
@@ -384,6 +432,11 @@ def _report(cfg, v):
 
 
 def _f(x):
+    """Percent to one decimal; a nonzero share never shows as 0.0% and a partial one never as 100.0%."""
+    if 0 < x < 0.05:
+        return "<0.1%"
+    if 99.95 <= x < 100:
+        return ">99.9%"
     return f"{x:.1f}%"
 
 
@@ -422,28 +475,30 @@ def _write_answer(cfg, v):
         still = int(r[r.index.str.startswith(STILL_MISSING)].n.sum())
         how = "; ".join(f"{s} {int(x.n):,}" for s, x in r.iterrows()
                         if s != NOT_MISSING and not s.startswith(STILL_MISSING)) or "none"
-        rec_rows.append({"field": field, "no usable raw value": f"{raw_missing:,} ({100 * raw_missing / tot:.1f}%)",
+        rec_rows.append({"field": field, "no usable raw value": f"{raw_missing:,} ({_f(100 * raw_missing / tot)})",
                          "recovered or explained by cleaning": how,
-                         "missing after cleaning": f"{still:,} ({100 * still / tot:.1f}%)"})
+                         "missing after cleaning": f"{still:,} ({_f(100 * still / tot)})"})
 
-    shown = drops[drops.max_pct > 0]
-    time_tab = pd.DataFrame({
-        "field": shown.measure.values,
-        f"first {unit}": [f"{p}: {_f(x)}" for p, x in zip(shown.first_period, shown.first_pct)],
-        f"last {unit}": [f"{p}: {_f(x)}" for p, x in zip(shown.last_period, shown.last_pct)],
-        "peak": [f"{p}: {_f(x)}" for p, x in zip(shown.max_period, shown.max_pct)],
-        "below half its first level from": [d if isinstance(d, str) else "no lasting drop" for d in shown.drop_from]})
+    time_tab, tiny = time_table(drops, unit)
+    if unit != "year":  # weeks or months can't date a change in recording practice
+        time_tab = time_tab.drop(columns="lasting change")
     n_periods = len(v["per"])
     short = (f"The data spans only {n_periods} {unit}s, too short to show shifts across years; the same code "
              "reports by year when the data covers two years or more."
              if unit != "year" else
-             "Read the last column as when a recording practice changed (computed, not assumed).")
+             f"*Lasting change* is the first {unit} from which the share stays below half (or at least double) its "
+             f"first-{unit} level, which dates a change in how the field was recorded.")
+    period = (f"requests opened {v['first_day']:%Y-%m-%d} to {v['last_day']:%Y-%m-%d}" if v["first_day"]
+              else "no readable opening dates")
+    cd = rec[rec.field == "community district"].set_index("status").n
+    cd_total, cd_missing = int(cd.sum()), int(cd.get(STILL_MISSING, 0))
+    cd_parks = int(cd.get(PARK_CODE, 0) + cd.get(PARK_COORDS, 0))
 
     lines = [
         "# Q1. Missing values",
         "",
-        f"*Drafted by `nyc311/q01_missing.py` from {n:,} raw rows and {len(cols)} columns. Numbers are computed; "
-        "write the prose from these bullets. Full tables: `outputs/agg/q01_*.csv`.*",
+        f"*Computed by `nyc311/q01_missing.py` from {n:,} raw rows and {len(cols)} columns, {period}. "
+        "Full tables: `outputs/agg/q01_*.csv`.*",
         "",
         "## Three ways to count missing",
         "",
@@ -480,11 +535,17 @@ def _write_answer(cfg, v):
         "",
         *md_table(pd.DataFrame(rec_rows)),
         "",
+        f"- **No community district** means a row has neither a standard community district nor a park/airport "
+        f"area, counted over all {cd_total:,} rows: {cd_missing:,} ({_f(100 * cd_missing / max(cd_total, 1))}) after "
+        f"cleaning. The {cd_parks:,} rows in parks or airports (outside every district) are not counted as missing; "
+        f"counting them too gives {_f(100 * (cd_missing + cd_parks) / max(cd_total, 1))}.",
+        "",
         f"## Missingness over time (by {unit} of opening)",
         "",
         *md_table(time_tab),
         "",
         f"- {short}",
+        *([f"- Under 0.1% in every {unit}: " + "; ".join(tiny) + "."] if tiny else []),
         "",
         "## Caveats",
         "",

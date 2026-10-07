@@ -1,7 +1,7 @@
 """Complaint-type taxonomy (Q3): normalize(), the reviewed map, classify(), and the q03 stage."""
+import re
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 import pytest
 
@@ -10,7 +10,6 @@ from nyc311 import taxonomy
 REPO = Path(__file__).resolve().parents[1]
 COUNTS = REPO / "outputs" / "agg" / "complaint_type_counts.csv"
 RAW_COMBOS = REPO / "outputs" / "agg" / "complaint_types_raw.csv"
-RAW_PARQUET = REPO / "work" / "raw"
 ORIGINS = {"city", "private", "natural", "other"}
 # Aggregates from the full cluster run (2,824 files, Jan 2010 - Nov 2021); the map was built against them.
 CLUSTER_AGG = REPO / "cluster_outputs" / "full" / "outputs" / "agg"
@@ -182,10 +181,23 @@ def test_plumbing_spellings_stay_apart_because_descriptors_differ():
     assert out.loc["Plumbing", "category"] == "Buildings & construction"
 
 
-def test_derelict_vehicle_spellings_merge():
-    out = taxonomy.classify(["Derelict Vehicle", "Derelict Vehicles"])
-    assert out.canonical_type.nunique() == 1
-    assert out.canonical_type.iloc[0] == "Derelict Vehicle"
+def test_derelict_vehicle_spellings_are_two_services():
+    """'Derelict Vehicle' (NYPD, later 'Abandoned Vehicle') and 'Derelict Vehicles' (DSNY) differ by one letter but
+    are two programs run side by side: NYPD handles cars with plates, DSNY removes unplated junk vehicles. The NYPD
+    rename is bridged; the DSNY type stays apart. Same category, so 'abandoned cars' as a whole stays comparable."""
+    out = taxonomy.classify(["Derelict Vehicle", "Abandoned Vehicle", "Derelict Vehicles"]).set_index("complaint_type")
+    assert out.loc["Derelict Vehicle", "canonical_type"] == out.loc["Abandoned Vehicle", "canonical_type"]
+    assert out.loc["Derelict Vehicle", "canonical_type"] != out.loc["Derelict Vehicles", "canonical_type"]
+    assert out.category.nunique() == 1 and out.origin.nunique() == 1
+    assert not out.needs_review.any()
+
+
+def test_new_derelict_vehicle_spelling_is_flagged_because_two_services_share_the_name():
+    """A new spelling that normalizes to 'derelict vehicle' could be either agency's program: it gets the
+    higher-volume meaning (DSNY's, listed first in the map) and goes to review, like 'plumbing'."""
+    row = _one("derelict  vehicles ")
+    assert row.needs_review
+    assert row.canonical_type == _one("Derelict Vehicles").canonical_type
 
 
 @pytest.mark.parametrize("variant", ["plumbing ", "PLUMBINGS", " Plumbing\t"])
@@ -198,7 +210,7 @@ def test_ambiguous_new_spellings_get_the_dominant_meaning_but_are_flagged(varian
 
 
 @pytest.mark.parametrize("variant, seen", [
-    ("derelict  vehicles ", "Derelict Vehicle"),
+    ("ABANDONED VEHICLES", "Abandoned Vehicle"),
     ("PAINT/PLASTER", "PAINT - PLASTER"),
     ("DHS Advantage - Landlord/Broker", "DHS Advantage -Landlord/Broker"),
     ("noise - residential", "Noise - Residential"),
@@ -400,6 +412,38 @@ def test_lookalikes_from_different_agencies_stay_distinct(a, b, cluster_combos):
     assert out.loc[a, "canonical_type"] != out.loc[b, "canonical_type"]
 
 
+def test_nypd_and_dsny_vehicle_programs_ran_side_by_side_so_they_stay_apart(cluster_combos):
+    """Evidence for the split (complaint_types_raw.csv): DSNY 'Derelict Vehicles' and NYPD 'Derelict Vehicle' /
+    'Abandoned Vehicle' were each in use from 2010 to 2021, at the same time, with no descriptor in common
+    (DSNY 'Derelict Vehicles' vs NYPD 'With License Plate'). Handling did not move from one agency to the
+    other, so a response-time comparison between them compares two services, not one."""
+    dsny, nypd = ["Derelict Vehicles"], ["Derelict Vehicle", "Abandoned Vehicle"]
+    rows = lambda types: cluster_combos[cluster_combos.complaint_type.isin(types)]
+    assert set(rows(dsny).agency) == {"DSNY"} and set(rows(nypd).agency) == {"NYPD"}
+    assert not set(rows(dsny).descriptor) & set(rows(nypd).descriptor)
+    assert set(rows(nypd).descriptor) == {"With License Plate"}
+    overlap_start = max(rows(dsny)["first"].min(), rows(nypd)["first"].min())
+    overlap_end = min(rows(dsny)["last"].max(), rows(nypd)["last"].max())
+    assert (pd.Timestamp(overlap_end) - pd.Timestamp(overlap_start)).days > 10 * 365
+    out = taxonomy.classify(dsny + nypd).set_index("complaint_type")
+    assert out.loc[nypd, "canonical_type"].nunique() == 1
+    assert out.loc["Derelict Vehicles", "canonical_type"] not in set(out.loc[nypd, "canonical_type"])
+
+
+def test_vehicle_types_are_single_agency_with_disjoint_descriptors_in_the_sample(cleaned_cfg):
+    """The same check on the clean sample table: after the split each canonical vehicle type has one agency."""
+    from nyc311.clean import clean_glob
+    names = _one("Derelict Vehicles").canonical_type, _one("Abandoned Vehicle").canonical_type
+    con = cleaned_cfg.connect()
+    d = con.sql(f"""select canonical_type, agency, descriptor, count(*) n from {clean_glob(cleaned_cfg)}
+                    where canonical_type in ('{names[0]}', '{names[1]}') group by all""").df()
+    assert set(d.canonical_type) == set(names)
+    per = d.groupby("canonical_type").agency.agg(set)
+    assert per[names[0]] == {"DSNY"} and per[names[1]] == {"NYPD"}
+    desc = d.groupby("canonical_type").descriptor.agg(set)
+    assert not desc[names[0]] & desc[names[1]]
+
+
 @pytest.mark.parametrize("a, b", [("Taxi Complaint", "Taxi Compliment"),
                                   ("Dispatched Taxi Complaint", "Dispatched Taxi Compliment"),
                                   ("Lost Property", "Found Property"),
@@ -459,9 +503,9 @@ def test_rename_handoffs_find_one_name_replacing_another():
     t = _periods([
         ("HEATING", "HPD", "Heat", 900, "2010-01-01", "2014-03-10"),
         ("HEAT/HOT WATER", "HPD", "Heat", 1500, "2014-03-11", "2021-11-19"),
-        ("Derelict Vehicle", "NYPD", "Derelict", 200, "2010-01-01 00:08", "2019-06-21"),
-        ("Derelict Vehicles", "DSNY", "Derelict", 300, "2010-01-01 00:16", "2021-11-20"),  # alongside: no handoff
-        ("Abandoned Vehicle", "NYPD", "Derelict", 100, "2018-06-15", "2021-11-20"),
+        ("Derelict Vehicle", "NYPD", "Abandoned", 200, "2010-01-01 00:08", "2019-06-21"),
+        ("Derelict Vehicles", "DSNY", "Derelict", 300, "2010-01-01 00:16", "2021-11-20"),  # another type and agency
+        ("Abandoned Vehicle", "NYPD", "Abandoned", 100, "2018-06-15", "2021-11-20"),
         ("Noise", "DEP", "Noise", 50, "2010-01-01", "2021-11-20"),
         # siblings grouped under one canonical type are not renames: different agency ...
         ("Forms", "ACS", "Contact", 1261, "2011-09-26", "2019-06-27"),
@@ -550,27 +594,77 @@ def test_renames_are_not_looked_for_in_a_short_window():
     assert out["handoffs"].empty and out["reorgs"].empty and out["legacy"].empty
 
 
-# ---------------------------------------------------------------- q03 stage
+# ---------------------------------------------------------------- q03 helpers (synthetic data)
 
-@pytest.mark.skipif(not any(RAW_PARQUET.glob("*.parquet")), reason="run the pipeline first (work/raw)")
-def test_q03_run_writes_its_outputs(tmp_path, capsys):
-    from nyc311 import q03_complaint_types
-    from nyc311.config import Config
+def _profile(rows):
+    t = pd.DataFrame(rows, columns=["complaint_type", "n", "main_agency", "descriptors", "first", "last",
+                                    "canonical_type"])
+    for c in ["first", "last"]:
+        t[c] = pd.to_datetime(t[c])
+    return t
 
-    cfg = Config.from_args(["--out", str(tmp_path), "--work", str(REPO / "work")])
+
+def test_spelling_variants_say_why_same_name_types_from_two_agencies_stay_apart():
+    from nyc311 import q03_complaint_types as q
+    t = _profile([
+        ("Derelict Vehicles", 300, "DSNY", frozenset({"Derelict Vehicles"}), "2010-01-01", "2021-11-20", "D"),
+        ("Derelict Vehicle", 200, "NYPD", frozenset({"With License Plate"}), "2010-01-02", "2019-06-21", "A"),
+        ("Abandoned Vehicle", 100, "NYPD", frozenset({"With License Plate"}), "2018-06-15", "2021-11-19", "A"),
+        ("PAINT/PLASTER", 90, "HPD", frozenset({"WALL"}), "2010-02-13", "2021-11-19", "P"),
+        ("PAINT - PLASTER", 80, "HPD", frozenset({"WALLS"}), "2010-01-04", "2014-03-04", "P"),
+    ])
+    v = q.spelling_variants(t).set_index("key")
+    # the period is that of the services (canonical types): NYPD's program ran on as 'Abandoned Vehicle'
+    assert v.loc["derelict vehicle", "decision"] == ("kept apart: DSNY and NYPD side by side 2010-01-02..2021-11-19, "
+                                                     "0 of 2 descriptors shared")
+    assert v.loc["paint-plaster", "decision"] == "merged -> P"
+
+
+def test_types_shared_by_agencies_separate_real_sharing_from_stray_rows():
+    from nyc311 import q03_complaint_types as q
+    combos = pd.DataFrame([
+        ("Graffiti", "DSNY", "Graffiti", 900, "2010-01-01", "2021-11-19"),
+        ("Graffiti", "NYPD", "Police Report Requested", 60, "2010-01-04", "2021-11-18"),
+        ("Noise - Residential", "NYPD", "Loud Music/Party", 5000, "2010-01-01", "2021-11-20"),
+        ("Noise - Residential", "DOITT", "Loud Music/Party", 2, "2016-01-01", "2016-01-02"),
+        ("Rodent", "DOHMH", "Rat Sighting", 400, "2010-01-01", "2021-11-20"),
+    ], columns=q.COMBO_COLUMNS)
+    for c in ["first", "last"]:
+        combos[c] = pd.to_datetime(combos[c])
+    shared, strays = q.types_shared_by_agencies(q.type_profile(combos))
+    assert shared.complaint_type.tolist() == ["Graffiti"] and strays.complaint_type.tolist() == ["Noise - Residential"]
+    assert shared.agencies.iloc[0] == "DSNY 900 / NYPD 60"
+
+
+def test_flow_text_folds_shares_that_would_print_as_zero():
+    from nyc311 import q03_complaint_types as q
+    flows = {"FLOORING/STAIRS": 220, "DOOR/WINDOW": 150, "SAFETY": 10, "OUTSIDE BUILDING": 3, "ROOF": 1, None: 616}
+    text = q._flow_text(flows)
+    assert text == ("FLOORING/STAIRS 22%; DOOR/WINDOW 15%; SAFETY 1%; 2 other types under 1%; "
+                    "no same-name descriptor later 62%")
+    assert q._flow_text({None: 5}) == "no same-name descriptor later"
+
+
+# ---------------------------------------------------------------- q03 stage (sample)
+
+def test_q03_run_writes_its_outputs(cleaned_cfg, capsys):
+    from nyc311 import ingest, q03_complaint_types
+
+    cfg = cleaned_cfg
     q03_complaint_types.run(cfg)
+    con = cfg.connect()
 
-    applied = pd.read_csv(tmp_path / "agg" / "q03_type_map_applied.csv", keep_default_na=False)
+    applied = pd.read_csv(cfg.out_dir / "agg" / "q03_type_map_applied.csv", keep_default_na=False)
     assert list(applied.columns) == ["complaint_type", "n", "canonical_type", "category", "origin",
                                      "is_info_request", "needs_review"]
-    n_rows = duckdb.sql(f"select count(*) from read_parquet('{(RAW_PARQUET / '*.parquet').as_posix()}')").fetchone()[0]
+    n_rows = con.sql(f"select count(*) from {ingest.raw_source(cfg)}").fetchone()[0]
     assert applied.n.sum() == n_rows
     assert len(applied) == 174
 
-    unreviewed = pd.read_csv(tmp_path / "agg" / "q03_unreviewed.csv")
+    unreviewed = pd.read_csv(cfg.out_dir / "agg" / "q03_unreviewed.csv")
     assert unreviewed.empty
 
-    md = (tmp_path / "answers" / "q03.md").read_text()
+    md = (cfg.out_dir / "answers" / "q03.md").read_text()
     assert "Q3a" in md and "Q3b" in md
     assert "174" in md and f"{n_rows:,}" in md
     # the report stage renders a markdown subset: one '# Q3' heading first, no raw HTML, '*' for italics
@@ -578,10 +672,52 @@ def test_q03_run_writes_its_outputs(tmp_path, capsys):
     assert "<" not in md and not any(line.startswith("_") for line in md.splitlines())
     # the sample covers about a month: renames are not looked for, and the findings say so
     assert "Renamed over time" in md and "too short" in md
-    for name in ["q03_renames.csv", "q03_reorganizations.csv", "q03_legacy_types.csv"]:
-        assert (tmp_path / "agg" / name).exists(), name
+    for name in ["q03_renames.csv", "q03_reorganizations.csv", "q03_legacy_types.csv", "q03_origin.csv"]:
+        assert (cfg.out_dir / "agg" / name).exists(), name
 
     printed = capsys.readouterr().out
     assert "BEGIN q03_complaint_types" in printed
-    report = (tmp_path / "reports" / "q03_complaint_types.txt").read_text().splitlines()
+    report = (cfg.out_dir / "reports" / "q03_complaint_types.txt").read_text().splitlines()
     assert len(report) <= 152
+
+
+def test_q03_answer_is_neutral_and_free_of_generated_oddities(cleaned_cfg):
+    from nyc311 import ingest, q01_missing, q03_complaint_types as q
+    from nyc311.clean import clean_glob
+    cfg = cleaned_cfg
+    q.run(cfg)
+    con = cfg.connect()
+    lines = (cfg.out_dir / "answers" / "q03.md").read_text().splitlines()
+    note, md = lines[2], "\n".join(lines)
+    lo, hi = q01_missing.data_period(con, clean_glob(cfg))
+    n_rows = con.sql(f"select count(*) from {ingest.raw_source(cfg)}").fetchone()[0]
+    assert note.startswith("*Computed by `nyc311/q03_complaint_types.py` from ") and note.endswith("*")
+    assert f"{n_rows:,}" in note and f"{lo:%Y-%m-%d}" in note and f"{hi:%Y-%m-%d}" in note
+    assert "write the prose" not in md and "Drafted" not in md
+    assert "(s)" not in md and " 0%" not in md and "(0.0%)" not in md
+    assert not re.search(r"(?<![\d,])0 of [\d,]+ types need", md)
+    # the derelict-vehicle split is explained where merges are listed, with both agencies
+    variants = next(line for line in lines if line.startswith("- **One name, several spellings.**"))
+    assert "Derelict Vehicles" in variants
+    assert re.search(r"Derelict Vehicles? \([\d,]+ (DSNY|NYPD)\): kept apart: (DSNY and NYPD|NYPD and DSNY) side by side",
+                     variants)
+    i = next(i for i, line in enumerate(lines) if line.startswith("- **Merge only true duplicates"))
+    j = next(j for j in range(i + 1, len(lines)) if lines[j].startswith("- **"))
+    merges = "\n".join(lines[i:j])
+    assert "Derelict Vehicles" in merges and "With License Plate" in merges and "plates" in merges
+    assert "0 spellings" not in md
+
+
+def test_q03_origin_table_counts_complaints_with_the_shared_rule(cleaned_cfg):
+    """pct_of_complaints uses rules.COMPLAINTS_SQL on the clean table (no tests, duplicates, requests or invalid
+    entries), so it agrees with every other question's complaint total."""
+    from nyc311 import q03_complaint_types as q, rules
+    from nyc311.clean import clean_glob
+    cfg = cleaned_cfg
+    q.run(cfg)
+    org = pd.read_csv(cfg.out_dir / "agg" / "q03_origin.csv")
+    con = cfg.connect()
+    n = con.sql(f"select count(*) from {clean_glob(cfg)} where {rules.COMPLAINTS_SQL}").fetchone()[0]
+    assert org.complaint_rows.sum() == n
+    by = con.sql(f"select origin, count(*) n from {clean_glob(cfg)} where {rules.COMPLAINTS_SQL} group by 1").df()
+    assert {o: c for o, c in zip(org.origin, org.complaint_rows) if c} == dict(zip(by.origin, by.n))

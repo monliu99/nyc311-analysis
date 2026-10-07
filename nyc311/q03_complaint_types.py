@@ -1,8 +1,9 @@
 """Q3: consistency issues in complaint_type (Q3a) and the cleaning strategy (Q3b).
 
 Applies nyc311.taxonomy to every raw complaint_type in the raw Parquet, writes the applied map and the review
-queue, prints the evidence for each kind of issue (including names that replaced each other over time), and drafts
-outputs/answers/q03.md. Every number is computed from the data it runs on.
+queue, prints the evidence for each kind of issue (including names that replaced each other over time and same-name
+types two agencies ran side by side), and writes outputs/answers/q03.md. Complaint shares use rules.COMPLAINTS_SQL on
+the clean table. Every number is computed from the data it runs on.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from itertools import combinations
 
 import pandas as pd
 
-from nyc311 import ingest, rules, taxonomy
+from nyc311 import clean, ingest, q01_missing, rules, taxonomy
 from nyc311.report import Report
 
 STAGE = "q03_complaint_types"
@@ -32,6 +33,9 @@ REORG_WINDOW_DAYS = 7      # an agency's types that end or start within this man
 REORG_MIN_TYPES = 3        # ...if at least this many types end or start, with at least one of each
 HANDOFF_MIN_ROWS = 100     # both spellings in a rename handoff need at least this many rows to be dated
 LEGACY_MIN_ROWS = 1000     # ended types at least this large get a descriptor crosswalk
+SHARED_MIN_SHARE = 0.01    # a raw type is shared by agencies if its second agency has at least this share of rows
+                           # (and at least RARE_BELOW rows); smaller second agencies are stray routing
+NAMESAKES_SHOWN = 3        # same-name pairs kept apart that are spelled out in the strategy
 CR = "try_cast(created_date as timestamp)"
 COMBO_COLUMNS = ["complaint_type", "agency", "descriptor", "n", "first", "last"]
 _IRREGULAR_SPACING = re.compile(r"\S-\s|\s-\S|\s/|/\s")
@@ -79,6 +83,7 @@ def type_profile(combos):
         ag = sorted(p["agencies"].items(), key=lambda kv: -kv[1])
         de = sorted(p["descriptors"].items(), key=lambda kv: -kv[1])
         rows.append({"complaint_type": ct, "n": p["n"], "main_agency": ag[0][0], "n_agencies": len(ag),
+                     "second_n": ag[1][1] if len(ag) > 1 else 0,
                      "agencies": " / ".join(f"{a} {v:,}" for a, v in ag),
                      "descriptors": frozenset(d for d, _ in de),
                      "top_descriptor": f"{de[0][0]} ({de[0][1] / p['n']:.0%})",
@@ -95,20 +100,76 @@ def _shared(a, b):
     return f"{len(a & b)} of {len(a | b)}"
 
 
+def _spans(t):
+    """First and last date of each canonical type (all its raw spellings), so a service renamed midway (NYPD's
+    'Derelict Vehicle' -> 'Abandoned Vehicle') counts as in use over its whole life."""
+    return t.groupby("canonical_type").agg(first=("first", "min"), last=("last", "max"))
+
+
+def _side_by_side(a, b, spans):
+    """'side by side <first>..<last>' when the canonical types of two spellings were both in use over a common
+    period, else ''."""
+    sa, sb = spans.loc[a.canonical_type], spans.loc[b.canonical_type]
+    start, end = max(sa["first"], sb["first"]), min(sa["last"], sb["last"])
+    return f" side by side {_period(start, end)}" if pd.notna(start) and pd.notna(end) and start < end else ""
+
+
 def spelling_variants(t):
-    """Raw spellings that normalize() reads as one name, and whether review merged them."""
-    rows = []
+    """Raw spellings that normalize() reads as one name, and whether review merged them. For spellings kept apart:
+    the two largest spellings' agencies if they differ, the period both their types were in use, and the
+    descriptors shared."""
+    rows, spans = [], _spans(t)
     for key, d in t.groupby(t.complaint_type.map(taxonomy.normalize), sort=False):
         if len(d) < 2:
             continue
         d = d.sort_values("n", ascending=False)
+        a, b = d.iloc[0], d.iloc[1]
         if d.canonical_type.nunique() == 1:
             decision = f"merged -> {d.canonical_type.iloc[0]}"
+        elif a.main_agency != b.main_agency:
+            decision = (f"kept apart: {a.main_agency} and {b.main_agency}{_side_by_side(a, b, spans)}, "
+                        f"{_shared(a.descriptors, b.descriptors)} descriptors shared")
         else:
-            decision = f"kept apart: {_shared(*d.descriptors.iloc[:2])} descriptors shared"
+            decision = f"kept apart: {_shared(a.descriptors, b.descriptors)} descriptors shared"
         rows.append({"key": key, "n": int(d.n.sum()), "spellings": " | ".join(_label(r) for r in d.itertuples()),
                      "decision": decision})
     return pd.DataFrame(rows, columns=["key", "n", "spellings", "decision"]).sort_values("n", ascending=False)
+
+
+_KEPT_APART = re.compile(r"Kept apart[^.]*\.")
+
+
+def namesakes_kept_apart(t, tmap):
+    """Same-name spellings (normalize()) that review kept apart although two agencies used them side by side:
+    one row per pair (the two largest spellings), with each side's agency, rows and top descriptor, the period both
+    their canonical types were in use, and the reason recorded in the map's notes (its 'Kept apart ...' sentence)."""
+    notes = dict(zip(tmap.complaint_type, tmap.notes))
+    rows, spans = [], _spans(t)
+    for key, d in t.groupby(t.complaint_type.map(taxonomy.normalize), sort=False):
+        d = d.sort_values("n", ascending=False)
+        if len(d) < 2 or d.canonical_type.nunique() == 1:
+            continue
+        a, b = d.iloc[0], d.iloc[1]
+        both = _side_by_side(a, b, spans)
+        if a.main_agency == b.main_agency or not both:
+            continue
+        why = _KEPT_APART.search(notes.get(a.complaint_type, "")) or _KEPT_APART.search(notes.get(b.complaint_type, ""))
+        rows.append({"type_a": a.complaint_type, "agency_a": a.main_agency, "n_a": int(a.n), "top_a": a.top_descriptor,
+                     "type_b": b.complaint_type, "agency_b": b.main_agency, "n_b": int(b.n), "top_b": b.top_descriptor,
+                     "period": both.replace(" side by side ", ""),
+                     "shared": _shared(a.descriptors, b.descriptors), "why": why.group(0) if why else "",
+                     "n": int(a.n + b.n)})
+    cols = ["type_a", "agency_a", "n_a", "top_a", "type_b", "agency_b", "n_b", "top_b", "period", "shared", "why", "n"]
+    return pd.DataFrame(rows, columns=cols).sort_values("n", ascending=False).reset_index(drop=True)
+
+
+def types_shared_by_agencies(t):
+    """Raw types with rows from more than one agency, split into real sharing (second agency holds at least
+    SHARED_MIN_SHARE of rows and at least RARE_BELOW rows) and stray routing (a handful of rows elsewhere)."""
+    multi = t[t.n_agencies > 1].sort_values("n", ascending=False)
+    real = (multi.second_n >= RARE_BELOW) & (multi.second_n >= SHARED_MIN_SHARE * multi.n)
+    cols = ["complaint_type", "n", "agencies"]
+    return multi[real][cols].reset_index(drop=True), multi[~real][cols].reset_index(drop=True)
 
 
 def _is_all_caps(s):
@@ -284,6 +345,27 @@ def descriptor_successors(combos, raw, canon=None):
     return flows
 
 
+def _share(x):
+    """A share as a whole percent; one that would print as 0% reads 'under 1%'."""
+    return f"{x:.0%}" if x >= 0.005 else "under 1%"
+
+
+def _flow_text(flows):
+    """'A 22%; B 15%; 2 other types under 1%; no same-name descriptor later 62%' from {successor or None: rows}."""
+    total = sum(flows.values()) or 1
+    named = sorted(((k, v) for k, v in flows.items() if k is not None), key=lambda kv: -kv[1])
+    if not named:
+        return "no same-name descriptor later"
+    big = [(k, v) for k, v in named if v / total >= 0.005]
+    parts = [f"{k} {v / total:.0%}" for k, v in big]
+    if len(named) > len(big):
+        parts.append(f"{_n(len(named) - len(big), 'other type')} under 1%")
+    unmatched = flows.get(None, 0)
+    if unmatched:
+        parts.append(f"no same-name descriptor later {_share(unmatched / total)}")
+    return "; ".join(parts)
+
+
 def legacy_types(t, combos, handoffs, hi):
     """Types that ended before the window's end (at least LEGACY_MIN_ROWS rows) and where their descriptors went."""
     cutoff = hi - pd.Timedelta(days=GAP_DAYS)
@@ -295,8 +377,7 @@ def legacy_types(t, combos, handoffs, hi):
         total = sum(flows.values()) or 1
         named = sorted(((k, v) for k, v in flows.items() if k is not None), key=lambda kv: -kv[1])
         unmatched = flows.get(None, 0)
-        flow = "; ".join(f"{k} {v / total:.0%}" for k, v in named)
-        flow = f"{flow}; no same-name descriptor later {unmatched / total:.0%}" if named else "no same-name descriptor later"
+        flow = _flow_text(flows)
         rows.append({"complaint_type": r.complaint_type, "agency": r.main_agency, "n": int(r.n),
                      "last_seen": _day(r.last), "canonical_type": r.canonical_type,
                      "bridged_to": bridged.get(r.complaint_type, ""),
@@ -329,7 +410,7 @@ def unusual_entries(t):
     by = inv.groupby("canonical_type").agg(types=("complaint_type", "size"), rows=("n", "sum"),
                                            first=("first", "min"), last=("last", "max")).reset_index()
     by = by.sort_values("rows", ascending=False)
-    by["period"] = [_period(a, b) for a, b in zip(by["first"], by["last"])]
+    by["period"] = [_dates(_day(a), _day(b)) for a, b in zip(by["first"], by["last"])]
     plain = inv[inv.complaint_type.map(lambda s: isinstance(s, str) and bool(_PLAIN.fullmatch(s))).astype(bool)]
     examples = plain.sort_values("n", ascending=False).complaint_type.head(EXAMPLES).tolist()
     valid = t[t.category != taxonomy.INVALID]
@@ -339,31 +420,50 @@ def unusual_entries(t):
 
 
 def _pct(x, total):
-    return f"{100 * x / total:.1f}%"
+    """Percent to one decimal; a nonzero share never shows as 0.0%."""
+    p = 100 * x / total if total else 0.0
+    return "under 0.1%" if 0 < p < 0.05 else f"{p:.1f}%"
 
 
-def summary_tables(t, total):
+def complaints_by_origin(con, cfg):
+    """Complaint rows by origin on the clean table with the shared rule (rules.COMPLAINTS_SQL: no test rows,
+    duplicate keys, information requests or invalid entries), or None if the clean table is not there yet."""
+    if not clean.clean_path(cfg).exists():
+        return None
+    return con.sql(f"""select origin, count(*)::bigint as complaint_rows from {clean.clean_glob(cfg)}
+                       where {rules.COMPLAINTS_SQL} group by 1""").df()
+
+
+def summary_tables(t, total, complaints=None):
+    """Categories, and origins with their share of all rows and of complaints. complaints (origin, complaint_rows)
+    comes from complaints_by_origin(); without it, complaints are the rows that are neither requests nor invalid."""
     cat = t.groupby("category").agg(canonical_types=("canonical_type", "nunique"), raw_types=("complaint_type", "size"),
                                     rows=("n", "sum")).sort_values("rows", ascending=False).reset_index()
     cat["pct_rows"] = [_pct(v, total) for v in cat.rows]
-    complaints = t[~t.is_info_request]
+    if complaints is None:
+        keep = t[~t.is_info_request & (t.category != taxonomy.INVALID)]
+        complaints = keep.groupby("origin").n.sum().rename("complaint_rows").reset_index()
     org = t.groupby("origin").agg(canonical_types=("canonical_type", "nunique"), rows=("n", "sum")).reset_index()
-    org = org.merge(complaints.groupby("origin").n.sum().rename("complaint_rows").reset_index(), how="left").fillna(0)
+    org = org.merge(complaints, on="origin", how="outer")
+    org[["canonical_types", "rows", "complaint_rows"]] = org[["canonical_types", "rows", "complaint_rows"]].fillna(0)
+    org = org.astype({"canonical_types": int, "rows": int, "complaint_rows": int})
     org["pct_rows"] = [_pct(v, total) for v in org.rows]
-    org["pct_of_complaints"] = [_pct(v, complaints.n.sum()) for v in org.complaint_rows]
-    org = org.sort_values("rows", ascending=False).drop(columns="complaint_rows")
-    return cat, org
+    org["pct_of_complaints"] = [_pct(v, org.complaint_rows.sum()) for v in org.complaint_rows]
+    return cat, org.sort_values("rows", ascending=False).reset_index(drop=True)
 
 
 def run(cfg):
     con = cfg.connect()
     src = ingest.raw_source(cfg)
     lo, hi = data_window(con, src)
-    return analyze(cfg, type_combos(con, src, lo, hi), lo, hi)
+    complaints = complaints_by_origin(con, cfg)
+    period = q01_missing.data_period(con, clean.clean_glob(cfg)) if complaints is not None else (lo, hi)
+    return analyze(cfg, type_combos(con, src, lo, hi), lo, hi, complaints, period)
 
 
-def analyze(cfg, combos, lo, hi):
-    """Everything after the one SQL pass: classify, write tables, the report block and the answer draft."""
+def analyze(cfg, combos, lo, hi, complaints=None, period=None):
+    """Everything after the SQL passes: classify, write tables, the report block and the answer. complaints: rows by
+    origin under rules.COMPLAINTS_SQL (complaints_by_origin); period: first and last opening date for the note."""
     prof = type_profile(combos)
     n_descriptors = combos.descriptor.nunique()
     t = prof.merge(taxonomy.classify(prof.complaint_type), on="complaint_type", how="left")
@@ -385,21 +485,24 @@ def analyze(cfg, combos, lo, hi):
     vague, renamed = vague_names(valid, caps, merged)
     req = t[t.is_info_request]
     info_cat = req[req.category == "Information requests"]
-    multi = valid[valid.n_agencies > 1][["complaint_type", "agencies"]]
+    shared, strays = types_shared_by_agencies(valid)
     rare = valid[valid.n < RARE_BELOW].sort_values("n")
     once = rare[rare.n == 1]
     spacing = valid[valid.complaint_type.map(lambda s: isinstance(s, str) and bool(_IRREGULAR_SPACING.search(s)))]
-    cat, org = summary_tables(t, total)
+    cat, org = summary_tables(t, total, complaints)
     n_merged_raw, n_merged_canon = int(merged.sum()), valid.canonical_type[merged].nunique()
     n_renamed = int((renamed & ~merged).sum())
     invalid, invalid_examples, blank = unusual_entries(t)
     rt = renames_over_time(valid, combos[combos.complaint_type.isin(set(valid.complaint_type))], lo, hi)
     tmap = taxonomy.load_map()
     map_families = int(tmap.canonical_type.value_counts().gt(1).sum())
+    namesakes = namesakes_kept_apart(valid, tmap)
+    org.to_csv(agg / "q03_origin.csv", index=False)
     rt["handoffs"].to_csv(agg / "q03_renames.csv", index=False)
     rt["reorgs"].to_csv(agg / "q03_reorganizations.csv", index=False)
     rt["legacy"].to_csv(agg / "q03_legacy_types.csv", index=False)
 
+    merges_txt = f"{n_merged_raw} spellings -> {n_merged_canon} types here" if n_merged_raw else "none here"
     rep = Report(STAGE, cfg.out_dir)
     rep.add(f"Q3a. complaint_type consistency on {total:,} rows (window {_period(lo, hi)}, trimmed {TRIM:.2%} each end)",
             f"raw complaint_type values: {n_raw} -> canonical types: {n_canon} -> categories: {n_cat}",
@@ -416,7 +519,8 @@ def analyze(cfg, combos, lo, hi):
             f"requests and compliments in other categories: {len(req) - len(info_cat)} types, "
             f"{int(req.n.sum() - info_cat.n.sum()):,} rows")
     rep.table(req[["complaint_type", "n", "main_agency", "category"]], max_rows=EXAMPLES)
-    rep.table(multi, max_rows=EXAMPLES, title="6. One type, several agencies")
+    rep.table(shared, max_rows=EXAMPLES, title=f"6. One type, several agencies: {len(shared)} raw types shared "
+              f"(second agency >= {SHARED_MIN_SHARE:.0%} of rows); {len(strays)} more with stray rows elsewhere")
     rep.add("", f"## 7. Rare entries: {len(rare)} types have < {RARE_BELOW} rows ({int(rare.n.sum()):,} rows); "
             f"{len(once)} appear once: {_names(once.complaint_type)}")
     rep.table(spacing[["complaint_type", "canonical_type"]], max_rows=EXAMPLES, title="8. Irregular spacing around - and /")
@@ -440,12 +544,18 @@ def analyze(cfg, combos, lo, hi):
                   title=f"12. Types that ended (>= {LEGACY_MIN_ROWS:,} rows): where their descriptors went "
                         "(same-name descriptor, same agency)")
     rep.table(cat, max_rows=20, title="Categories after cleaning")
-    rep.table(org, max_rows=5, title="Origin (for Q9); pct_of_complaints excludes requests")
+    complaint_rule = ("rules.COMPLAINTS_SQL on the clean table" if complaints is not None
+                      else "clean table not found: requests and invalid entries left out by type only")
+    rep.table(org, max_rows=5, title=f"Origin (for Q9); complaints = {complaint_rule}")
     rep.add("", "Q3b. Strategy",
             "- Keep raw complaint_type; add canonical_type/category/origin/is_info_request from a reviewed lookup",
             "  (nyc311/complaint_type_map.csv, one row per raw spelling, notes for every merge/rename/judgment).",
-            f"- Merge true duplicates and renames ({n_merged_raw} spellings -> {n_merged_canon} types here); rename "
+            f"- Merge true duplicates and renames ({merges_txt}); rename "
             f"vague/ALL-CAPS names ({n_renamed}); keep look-alikes apart; split types stay legacy types.",
+            f"- Same name, two agencies, used side by side: kept apart as two services ({len(namesakes)} pairs):"
+            if len(namesakes) else "- No same-name types from two agencies were in use side by side.",
+            *[f"  {r.type_a} ({r.agency_a} {r.n_a:,}; {r.top_a}) vs {r.type_b} ({r.agency_b} {r.n_b:,}; {r.top_b}), "
+              f"{r.period}, {r.shared} descriptors shared" for r in namesakes.head(NAMESAKES_SHOWN).itertuples()],
             f"- Hierarchy keeps granularity: {n_cat} categories > {n_canon} canonical types > {n_descriptors:,} descriptors.",
             "- New data: exact -> normalized (case/space/dash/plural) -> fuzzy (flagged) -> unreviewed (flagged);",
             "  flagged types go to agg/q03_unreviewed.csv with row counts; a reviewer adds one CSV row, no code change.")
@@ -486,9 +596,11 @@ def _renames_bullets(v):
     unbridged = lg[lg.bridged_to == ""]
     split = unbridged[unbridged.n_successors >= 2]
     if not split.empty:
-        out.append(f"- **Split, not renamed.** {_n(len(split), 'retired type')} with at least {LEGACY_MIN_ROWS:,} rows had their "
-                   "descriptors taken over by two or more new types, so no single successor exists and they keep their "
-                   "own canonical type. Matching descriptor names within the agency: " +
+        one = len(split) == 1
+        out.append(f"- **Split, not renamed.** {_n(len(split), 'retired type')} with at least {LEGACY_MIN_ROWS:,} rows "
+                   f"had {'its' if one else 'their'} descriptors taken over by two or more new types, so no single "
+                   f"successor exists and {'it keeps its' if one else 'they keep their'} own canonical type. Matching "
+                   "descriptor names within the agency: " +
                    _bullets_from(split, lambda r: f"`{r.complaint_type}` ({r.n:,} rows, last {r.last_seen}): "
                                                   f"{r.flow}", k=3) + ".")
     if len(unbridged) > len(split):
@@ -507,6 +619,10 @@ def _write_answer(cfg, v):
     n_disjoint = int(v["pairs"].descriptors_shared.str.startswith("0 of").sum())
     by_origin = "; ".join(f"{r.origin} {r.rows:,} rows ({r.pct_rows} of all, {r.pct_of_complaints} of complaints)"
                           for r in org.itertuples(index=False))
+    n_complaints = int(org.complaint_rows.sum())
+    complaint_def = ("test records, duplicate keys, requests and invalid entries" if v["complaints"] is not None
+                     else "requests and invalid entries")
+    n_invalid = int(invalid.rows.sum())
     if invalid.empty:
         unusual = "- **Unusual entries.** No test records or web-form probes in this data"
     else:
@@ -514,16 +630,44 @@ def _write_answer(cfg, v):
                    "not service requests: " + _bullets_from(
                        invalid, lambda r: f"{r.canonical_type} {r.types} types, {r.rows:,} rows ({r.period})") +
                    (" (e.g. " + ", ".join(f"`{x}`" for x in v["invalid_examples"]) + ")" if v["invalid_examples"] else ""))
-    unusual += (f". {len(blank)} other types never carry a descriptor" + (
+    unusual += (f". {_n(len(blank), 'other type' if len(invalid) else 'type')} never "
+                f"{'carries' if len(blank) == 1 else 'carry'} a descriptor" + (
         ", e.g. " + _bullets_from(blank, lambda r: f"`{r.complaint_type}` ({r.n:,}, {r.main_agency})") if len(blank) else "")
         + ".")
     lg = v["rt"]["legacy"]
     n_legacy = int(((lg.bridged_to == "") & (lg.n_successors >= 2)).sum())
+    first, last = v["period"] if v["period"] is not None else (v["lo"], v["hi"])
+    period = (f"requests opened {pd.Timestamp(first):%Y-%m-%d} to {pd.Timestamp(last):%Y-%m-%d}"
+              if first is not None and pd.notna(first) else "no readable opening dates")
+    shared, strays = v["shared"], v["strays"]
+    n_multi = len(shared) + len(strays)
+    if not n_multi:
+        several = "- **One type, several agencies.** Every raw type comes from a single agency."
+    else:
+        several = (f"- **One type, several agencies.** {_n(n_multi, 'raw type')} carry rows from more than one agency. "
+                   + (f"In {len(strays)} of them the other agencies hold under {SHARED_MIN_SHARE:.0%} of rows (stray "
+                      "routing, e.g. " + _bullets_from(strays, lambda r: f"{r.complaint_type}: {r.agencies}", k=2)
+                      + "). " if len(strays) else "")
+                   + ("Shared in earnest (the map is keyed on the raw name, so each stays one type; compare agencies "
+                      "within them with care): " + _bullets_from(shared, lambda r: f"{r.complaint_type} ({r.agencies})")
+                      + "." if len(shared) else "None is shared in earnest."))
+    namesakes = v["namesakes"]
+    kept = []
+    if len(namesakes):
+        kept = [f"  - Same name, two agencies, in use side by side: kept apart as two services ({_n(len(namesakes), 'pair')}"
+                f" here)" + (". Largest:" if len(namesakes) > NAMESAKES_SHOWN else ":")] + [
+            f"    - `{r.type_a}` ({r.agency_a}, {r.n_a:,} rows, top descriptor {r.top_a}) vs `{r.type_b}` ({r.agency_b}, "
+            f"{r.n_b:,}, {r.top_b}), both in use {r.period}, {r.shared} descriptors shared." + (f" {r.why}" if r.why else "")
+            for r in namesakes.head(NAMESAKES_SHOWN).itertuples()]
+    merges_here = (f"{v['n_merged_raw']} spellings -> {v['n_merged_canon']} types here" if v["n_merged_raw"]
+                   else "none needed in this data")
+    n_review = len(v["review"])
+    review_text = (f"On this data all {v['n_raw']} types resolve to a reviewed row." if n_review == 0 else
+                   f"On this data {n_review} of {v['n_raw']} types need review.")
     lines = [
         "# Q3. Complaint categories",
         "",
-        f"*Drafted by `nyc311/q03_complaint_types.py` from {total:,} rows. Numbers are computed; write the prose from "
-        "these bullets.*",
+        f"*Computed by `nyc311/q03_complaint_types.py` from {total:,} rows, {period}.*",
         "",
         "## Q3a. Consistency issues in complaint_type",
         "",
@@ -535,7 +679,7 @@ def _write_answer(cfg, v):
         f"- **Two naming systems.** {int(caps.sum())} types are ALL-CAPS codes ({int(valid.n[caps].sum()):,} rows, "
         f"{_pct(valid.n[caps].sum(), total)} of all rows): " + _bullets_from(
             v["caps_tab"], lambda r: f"{r.agency} {r.caps_types}, e.g. {r.examples}; {r.agency} also has "
-                                     f"{r.other_types} Title Case type(s)") +
+                                     f"{_n(r.other_types, 'Title Case type')}") +
         ". Every other type is Title Case, so HPD's `PLUMBING`/`ELECTRIC` sit next to DOB's `Plumbing`/`Electrical`.",
         f"- **Look-alike names that mean different things.** {len(v['pairs'])} pairs of names look alike (same word, "
         f"similar spelling, or one name inside another across agencies); {n_disjoint} of them share no descriptor at "
@@ -549,7 +693,7 @@ def _write_answer(cfg, v):
         f"for information, materials, documents or services, or compliments; {len(info_cat)} of them "
         f"({int(info_cat.n.sum()):,} rows) are pure information requests. Largest: " + _bullets_from(
             req, lambda r: f"{r.complaint_type} ({r.n:,}, {r.main_agency})") + ".",
-        "- **One type, several agencies:** " + _bullets_from(v["multi"], lambda r: f"{r.complaint_type} ({r.agencies})") + ".",
+        several,
         f"- **Rare entries.** {len(rare)} types have fewer than {RARE_BELOW} rows ({int(rare.n.sum()):,} rows in total); "
         f"{len(once)} appear once ({_names(once.complaint_type)}).",
         "- **Irregular spacing/punctuation:** " + _bullets_from(
@@ -563,26 +707,29 @@ def _write_answer(cfg, v):
         f"- **Three levels keep the granularity operations need:** {v['n_cat']} categories > {v['n_canon']} canonical "
         f"types > {v['n_descriptors']:,} descriptors (unchanged). Categories by rows: " + "; ".join(
             f"{r.category} {r.rows:,} ({r.pct_rows})" for r in v["cat"].itertuples(index=False)) + ".",
-        f"- **Merge only true duplicates and true renames** ({v['n_merged_raw']} spellings -> {v['n_merged_canon']} "
-        "types here). Check agency and descriptors before merging: look-alikes handled by different agencies with no "
-        f"shared descriptors stay apart. Rename only to clarify ({v['n_renamed']} types: HPD's ALL-CAPS codes become a "
-        "`Housing - ...` family; vague names take their meaning from the descriptor).",
+        f"- **Merge only true duplicates and true renames** ({merges_here}). Check agency, descriptors and dates "
+        "before merging: look-alikes handled by different agencies "
+        "with no shared descriptors stay apart, and so do same-name types that two agencies ran at the same time, "
+        "which are two services rather than one service that changed hands.",
+        *kept,
+        f"- **Rename only to clarify** ({v['n_renamed']} types: HPD's ALL-CAPS codes become a `Housing - ...` family; "
+        "vague names take their meaning from the descriptor).",
         "- **Make time series continuous without hiding reorganizations.** When one name replaced another for the same "
         "work (same agency, descriptors carry on), both spellings share one canonical type. When an agency split a type "
         "across several new ones, the old type keeps its own canonical type (continuous at the category level) and "
         "`outputs/agg/q03_legacy_types.csv` shows where each of its descriptors went"
-        + (f" ({n_legacy} split types here)." if not v["rt"]["too_short"] else "."),
+        + (f" ({_n(n_legacy, 'split type')} here)." if not v["rt"]["too_short"] else "."),
         "- **Adapts to new data without code changes.** `taxonomy.classify()` resolves each distinct raw value by exact "
         "match, then by normalized match (case, spacing, dashes/slashes, plural), then by a close fuzzy match (flagged "
         "for review), else marks it `Unreviewed` (flagged). Flagged types land in `outputs/agg/q03_unreviewed.csv` with "
         "row counts, largest first; a reviewer adds one CSV row each, pointing a renamed type at its existing canonical "
-        f"type, and the next run lists the handoff in `outputs/agg/q03_renames.csv`. On this data {len(v['review'])} of "
-        f"{v['n_raw']} types need review.",
+        f"type, and the next run lists the handoff in `outputs/agg/q03_renames.csv`. {review_text}",
         f"- **Separate complaints from requests and junk** with `is_info_request` and the `{taxonomy.INVALID}` category, "
-        f"so complaint volumes and response-time KPIs exclude the {_pct(req.n.sum(), total)} of rows that are requests "
-        f"and the {int(invalid.rows.sum()):,} rows that are not service requests at all.",
-        f"- **Origin, for Q9:** {by_origin}. Judgment calls (sidewalks, rodents, snow, water meters, homeless "
-        "encampments, DHS payments) are recorded in the map's notes.",
+        f"so complaint volumes and response-time KPIs exclude the {_pct(req.n.sum(), total)} of rows that are requests"
+        + (f" and the {n_invalid:,} rows that are not service requests at all." if n_invalid else "."),
+        f"- **Origin, for Q9** (complaints: the {n_complaints:,} rows left after removing {complaint_def}): "
+        f"{by_origin}. Judgment calls (sidewalks, rodents, snow, water meters, homeless encampments, DHS payments) "
+        "are recorded in the map's notes.",
         "",
     ]
     path = cfg.out_dir / "answers" / "q03.md"
