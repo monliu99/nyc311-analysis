@@ -313,48 +313,163 @@ def borough_table(d, no_district, demo):
 
 
 # ------------------------------------------------------------------ labels
+LEADER_COLOR = "#222222"   # leader lines and anchor dots: dark enough to read at the report's column width
+LEADER_LW = 1.0
+LABEL_RADII = (14, 22, 32, 44, 58, 74, 92, 112, 134)   # candidate distances from the anchor, in points
+LABEL_ANGLES = np.radians(np.arange(0, 360, 15))
+LAND_COST = 6.0            # a label fully over drawn districts costs this much more than one in open space...
+LENGTH_COST = 1 / 60       # ...and each point of leader line this much, so labels move to open space if it is near
+CLASH_COST = 200           # overlapping a label or legend, or covering another anchor
+CROSS_COST = 100           # leaders crossing each other or another label, or passing next to another anchor
+
+
+def interior_point(outer, holes=(), n=24):
+    """A point deep inside a polygon (close to the one farthest from its edges, measured on the ground), to anchor a
+    label: the vertex mean of a hooked or concave district can fall outside it or on its edge."""
+    v = np.asarray(outer.vertices, dtype=float)
+    k = np.array([np.cos(np.radians(MAP_LAT)), 1.0])   # degrees of longitude are shorter on the ground
+    rings = [v] + [np.asarray(h.vertices, dtype=float) for h in holes]
+    a = np.concatenate([r[:-1] for r in rings]) * k
+    ab = np.concatenate([r[1:] for r in rings]) * k - a
+    ll = np.maximum((ab ** 2).sum(1), 1e-30)
+
+    def clearance(p):   # distance to the nearest edge (ground units), -inf outside the polygon
+        inside = outer.contains_points(p)
+        for h in holes:
+            inside &= ~h.contains_points(p)
+        out = np.full(len(p), -np.inf)
+        idx = np.flatnonzero(inside)
+        for s in range(0, len(idx), 128):
+            q = p[idx[s:s + 128]] * k
+            t = np.clip(((q[:, None] - a[None]) * ab[None]).sum(2) / ll[None], 0, 1)
+            out[idx[s:s + 128]] = np.sqrt(((q[:, None] - a[None] - t[..., None] * ab[None]) ** 2).sum(2)).min(1)
+        return out
+
+    lo, hi = v.min(0), v.max(0)
+    gx, gy = np.meshgrid(np.linspace(lo[0], hi[0], n + 1), np.linspace(lo[1], hi[1], n + 1))
+    pts, step = np.column_stack([gx.ravel(), gy.ravel()]), (hi - lo) / n
+    best, best_c = None, -np.inf
+    for _ in range(3):   # a coarse grid, then two finer ones around the best point so far
+        c = clearance(pts)
+        if c.max() > best_c:
+            best, best_c = pts[int(np.argmax(c))], c.max()
+        if best is None:
+            break
+        gx, gy = np.meshgrid(np.linspace(best[0] - step[0], best[0] + step[0], 9),
+                             np.linspace(best[1] - step[1], best[1] + step[1], 9))
+        pts, step = np.column_stack([gx.ravel(), gy.ravel()]), step / 4
+    if best is None:
+        best = v[:-1].mean(axis=0)
+    return float(best[0]), float(best[1])
+
+
+def _cross(p1, p2, q1, q2):
+    """Whether segments p1-p2 and q1-q2 cross."""
+    def orient(a, b, c):
+        return np.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+    return orient(p1, p2, q1) * orient(p1, p2, q2) < 0 and orient(q1, q2, p1) * orient(q1, q2, p2) < 0
+
+
+def _hits_box(p, q, box):
+    """Whether segment p-q touches the box."""
+    if box.contains(*p) or box.contains(*q):
+        return True
+    c = [(box.x0, box.y0), (box.x1, box.y0), (box.x1, box.y1), (box.x0, box.y1)]
+    return any(_cross(p, q, c[i], c[(i + 1) % 4]) for i in range(4))
+
+
+def _near_segment(p, q, r, tol):
+    p, q, r = (np.asarray(z, dtype=float) for z in (p, q, r))
+    d = q - p
+    t = np.clip(np.dot(r - p, d) / max(np.dot(d, d), 1e-12), 0, 1)
+    return np.hypot(*(p + t * d - r)) < tol
+
+
 def place_labels(fig, ax, items, avoid=(), fontsize=8.5, **kw):
-    """Greedy label placement. items: (x, y, text) in data coordinates, in priority order. Each label goes at its
-    anchor if its box overlaps no label placed before and no `avoid` artist and stays inside the axes; otherwise at
-    the nearest free offset around the anchor, with a thin leader line. Returns the labels' display boxes."""
+    """Map labels with leader lines. items: (x, y, text) in data coordinates, in priority order. Every anchor gets a
+    dot, and its label sits off to the side, joined to the dot by a dark leader line. Candidate spots ring each anchor
+    (LABEL_RADII x LABEL_ANGLES); the chosen ones avoid each other, the `avoid` artists, every anchor dot, crossing
+    leaders and the axes edge, and prefer open (undrawn) space to drawn districts, then a short leader. Chosen
+    greedily in priority order, then revised a few times given the others. Returns the labels' display boxes."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.transforms import Bbox
 
     canvas = fig.canvas if hasattr(fig.canvas, "get_renderer") else FigureCanvasAgg(fig)
     canvas.draw()   # resolves the constrained layout, so display coordinates are final
     renderer = canvas.get_renderer()
     frame = ax.get_window_extent(renderer)
-    taken = [(a.get_tightbbox(renderer) if hasattr(a, "get_tightbbox") else a.get_window_extent(renderer))
-             for a in avoid]
-    taken = [b for b in taken if b is not None]
-    dirs = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)]
-    cands = [(0.0, 0.0)] + [(r * dx, r * dy * 0.6) for r in (14, 24, 36, 50, 66, 84, 104) for dx, dy in dirs]
+    pt = fig.dpi / 72
+    parts = []   # an inset axes (a color key) counts as its box, tick labels and title, not their joint bounding box
+    for a in avoid:
+        parts += [a, a.xaxis, a.yaxis, a.title] if isinstance(a, plt.Axes) else [a]
+    taken = [a.get_window_extent(renderer) if isinstance(a, plt.Axes) else a.get_tightbbox(renderer) for a in parts]
+    taken = [b.padded(2 * pt) for b in taken if b is not None and b.width > 0 and b.height > 0]
+    rgba = np.asarray(canvas.buffer_rgba())
+    drawn = np.pad((rgba[..., :3] < 235).any(axis=2), ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    h_px, w_px = rgba.shape[:2]
+
+    def land(b):   # share of the box's pixels already drawn on (districts, hatching)
+        x0, x1 = int(np.clip(b.x0, 0, w_px)), int(np.clip(b.x1, 0, w_px))
+        y0, y1 = int(np.clip(h_px - b.y1, 0, h_px)), int(np.clip(h_px - b.y0, 0, h_px))
+        area = max((x1 - x0) * (y1 - y0), 1)
+        return (drawn[y1, x1] - drawn[y0, x1] - drawn[y1, x0] + drawn[y0, x0]) / area
+
     style = {"fontsize": fontsize, "fontfamily": nyt.SANS, "fontweight": "bold", "color": "#111111",
              "path_effects": [pe.withStroke(linewidth=2.5, foreground="white")], **kw}
+    anchors = [tuple(ax.transData.transform((x, y))) for x, y, _ in items]
+    cands = []
+    for i, (x, y, text) in enumerate(items):
+        t = ax.text(x, y, text, **style)
+        bb = t.get_window_extent(renderer)
+        t.remove()
+        w, h = bb.width, bb.height
+        others = [a for j, a in enumerate(anchors) if j != i]
+        lst = []
+        for r in LABEL_RADII:
+            for th in LABEL_ANGLES:
+                c, s = np.cos(th), np.sin(th)
+                px, py = anchors[i][0] + r * pt * c, anchors[i][1] + r * pt * s
+                ha = "left" if c > 0.38 else "right" if c < -0.38 else "center"
+                va = "bottom" if s > 0.38 else "top" if s < -0.38 else "center"
+                x0 = px if ha == "left" else px - w if ha == "right" else px - w / 2
+                y0 = py if va == "bottom" else py - h if va == "top" else py - h / 2
+                box = Bbox.from_bounds(x0, y0, w, h)
+                pad = box.padded(4 * pt)
+                center = ((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2)
+                inside = frame.x0 <= box.x0 and box.x1 <= frame.x1 and frame.y0 <= box.y0 and box.y1 <= frame.y1
+                cost = (1000 * (not inside) + CLASH_COST * sum(box.padded(2 * pt).overlaps(b) for b in taken)
+                        + CLASH_COST * sum(pad.contains(*a) for a in others)
+                        + CROSS_COST * sum(_near_segment(center, anchors[i], a, 4 * pt) for a in others)
+                        + LAND_COST * land(box) + LENGTH_COST * r)
+                lst.append((cost, box, center, r * c, r * s, ha, va))
+        cands.append(sorted(lst, key=lambda z: z[0]))
+
+    def pair_cost(i, cand, j, other):
+        box, center = cand[1], cand[2]
+        box2, center2 = other[1], other[2]
+        return (CLASH_COST * box.padded(2 * pt).overlaps(box2)
+                + CROSS_COST * (_cross(center, anchors[i], center2, anchors[j])
+                                + _hits_box(center, anchors[i], box2) + _hits_box(center2, anchors[j], box)))
+
+    def best_for(i, chosen):
+        return min(cands[i], key=lambda cd: cd[0] + sum(pair_cost(i, cd, j, o) for j, o in chosen.items() if j != i))
+
+    chosen = {}
+    for i in range(len(items)):
+        chosen[i] = best_for(i, chosen)
+    for _ in range(3):
+        for i in range(len(items)):
+            chosen[i] = best_for(i, chosen)
+
     boxes = []
-    for x, y, text in items:
-        best = None
-        for dx, dy in cands:
-            ha = "center" if dx == 0 else "left" if dx > 0 else "right"
-            va = "center" if dy == 0 else "bottom" if dy > 0 else "top"
-            t = ax.annotate(text, (x, y), xytext=(dx, dy), textcoords="offset points", ha=ha, va=va, **style)
-            bb = t.get_window_extent(renderer)
-            t.remove()
-            pad = bb.expanded(1.06, 1.12)
-            inside = frame.x0 <= bb.x0 and bb.x1 <= frame.x1 and frame.y0 <= bb.y0 and bb.y1 <= frame.y1
-            score = 10 * sum(pad.overlaps(b) for b in taken) + 100 * (not inside)
-            if best is None or score < best[0]:
-                best = (score, dx, dy, ha, va)
-            if score == 0:
-                break
-        _, dx, dy, ha, va = best
-        arrow = ({"arrowstyle": "-", "color": "#666666", "lw": 0.7, "shrinkA": 1, "shrinkB": 0}
-                 if (dx, dy) != (0.0, 0.0) else None)
+    for i, (x, y, text) in enumerate(items):
+        _, _, _, dx, dy, ha, va = chosen[i]
         t = ax.annotate(text, (x, y), xytext=(dx, dy), textcoords="offset points", ha=ha, va=va, zorder=6,
-                        arrowprops=arrow, **style)
+                        arrowprops={"arrowstyle": "-", "color": LEADER_COLOR, "lw": LEADER_LW, "shrinkA": 0,
+                                    "shrinkB": 0}, **style)
+        ax.plot([x], [y], ls="none", marker="o", ms=3.6, mfc=LEADER_COLOR, mec="white", mew=0.7, zorder=7)
         t.get_window_extent(renderer)              # places the text at its offset
-        bb = Text.get_window_extent(t, renderer)   # the text only (an Annotation's extent includes its leader)
-        taken.append(bb.expanded(1.06, 1.12))
-        boxes.append(bb)
+        boxes.append(Text.get_window_extent(t, renderer))   # the text only (an Annotation's extent includes its leader)
     return boxes
 
 
@@ -418,12 +533,12 @@ def fig_map(d, texts, path, note, title):
         if code in commuter:
             ax.add_patch(PathPatch(shape, facecolor="none", edgecolor="#111111", lw=1.0, zorder=3))
         area = abs(_area(outer.vertices))
-        if area > parts.get(code, (0, None))[0]:
-            parts[code] = (area, outer.vertices.mean(axis=0))
+        if area > parts.get(code, (0, None, None))[0]:
+            parts[code] = (area, outer, holes)   # the largest part carries the label
     ax.autoscale_view()
     ax.set_aspect(1 / np.cos(np.radians(MAP_LAT)))
     ax.axis("off")
-    key = ax.inset_axes([0.02, 0.90, 0.46, 0.03])
+    key = ax.inset_axes([0.02, 0.875, 0.31, 0.028])   # narrow, so labels for the north can use the open space
     for i, c in enumerate(colors):
         key.add_patch(Rectangle((i, 0), 1, 1, color=c))
     key.set_xlim(0, len(colors))
@@ -434,7 +549,7 @@ def fig_map(d, texts, path, note, title):
     for s in key.spines.values():
         s.set_visible(False)
     key.grid(False)
-    key.set_title("Complaints per 1,000 residents a year (district fifths)", loc="left", fontsize=9.5,
+    key.set_title("Complaints per 1,000 residents a year\n(district fifths)", loc="left", fontsize=9.5,
                   fontfamily=nyt.SANS)
     swatch = ax.add_patch(Rectangle((0.80, 0.06), 0.035, 0.03, transform=ax.transAxes, facecolor="white",
                                     edgecolor=HATCH_GRAY, lw=0.5, hatch="...."))
@@ -454,9 +569,9 @@ def fig_map(d, texts, path, note, title):
     items = []
     for b in _label_picks(d):
         r = rows.loc[b]
-        tag = f", {COMMUTER_LABEL}" if r.commuter else ""
-        items.append((*parts[b][1], f"{r.borough} {r.cd_number}\n{r.rate:,.0f}{tag}"))
-    place_labels(fig, ax, items, avoid=[key, swatch, parks])
+        tag = f"\n{COMMUTER_LABEL}" if r.commuter else ""
+        items.append((*interior_point(*parts[b][1:]), f"{r.borough} {r.cd_number}\n{r.rate:,.0f}{tag}"))
+    place_labels(fig, ax, items, avoid=[key, swatch, parks], fontsize=9)
     return nyt.save(fig, path)
 
 
@@ -494,7 +609,8 @@ def fig_district_rates(d, city_rate, path, period, f):
                color=nyt.CORAL.line, fontfamily=nyt.SANS, fontweight="bold", fontsize=10)
     first.text(0.99, 0.12, "All other complaints", transform=first.transAxes, ha="right", color=nyt.SAGE.line,
                fontfamily=nyt.SANS, fontweight="bold", fontsize=10)
-    first.text(city_rate, 1.0, f" citywide {city_rate:,.0f}", transform=first.get_xaxis_transform(), va="bottom",
+    first.text(city_rate, 1.0, f" all {len(d)} districts: {city_rate:,.0f}", transform=first.get_xaxis_transform(),
+               va="bottom",
                fontsize=8.5, color=nyt.NOTE_GRAY)
     title = (f"Complaints per 1,000 residents a year: {f['top_short']} leads at {f['top_rate']:,.0f}, "
              f"{f['top_housing']:.0f}% of it housing")
@@ -503,8 +619,8 @@ def fig_district_rates(d, city_rate, path, period, f):
                                   for c in f["commuters"]) + ")"
     nyt.title(fig, textwrap.fill(title, 100))
     star = (f" * {COMMUTER_LABEL}: many workers and visitors, few residents." if f["commuters"] else "")
-    nyt.note(fig, f"Note: {period}; boroughs ordered by rate, districts within each by rate. Dashed line: citywide "
-                  f"rate for the {len(d)} districts.{star}")
+    nyt.note(fig, f"Note: {period}; boroughs ordered by rate, districts within each by rate. Dashed line: rate "
+                  f"across the {len(d)} districts (complaints with no district left out).{star}")
     return nyt.save(fig, path)
 
 
@@ -585,12 +701,13 @@ def _report(out_dir, v):
     rep = Report(STAGE, out_dir)
     rep.add(f"Q7. Complaints per 1,000 residents a year by community district, {v['period']} "
             f"({len(v['days']):,} complete days)", f"population: {v['pops']}",
-            f"citywide rate ({len(d)} districts): {v['city_rate']:,.1f}",
+            f"rate across the {len(d)} districts: {v['city_rate']:,.1f}",
             f"spread: {f['ratio']:.2f}-fold across {f['n_rated']} districts; {f['ratio_all']:.2f}-fold across all "
             f"{f['n_districts']} (with {COMMUTER_LABEL}s)")
     for c in f["commuters"]:
-        rep.add(f"{COMMUTER_LABEL}: {c['name']} rate {c['rate']:,.1f} (rank {c['rank']} of {len(d)}), residents "
-                f"{c['residents']:,.0f}, housing {c['housing_share']:.1f}%, top types: {_types_text(c['types'])}")
+        rep.add(f"{COMMUTER_LABEL}: {c['name']} rate {c['rate']:,.1f} (would rank {c['rank']} of {len(d)}; not "
+                f"ranked), residents {c['residents']:,.0f}, housing {c['housing_share']:.1f}%, top types: "
+                f"{_types_text(c['types'])}")
     rep.table(v["ex"].round(2), title="Rows (default set -> mapped to a district)")
     rep.table(v["unknown"], max_rows=6, title="No community district, by agency")
     rep.table(v["boroughs"].drop(columns=["person_years"]).round(1), title="Boroughs")
@@ -633,6 +750,8 @@ def _write_answer(out_dir, v):
     n_all = int(d.n.sum())
     comm = f["commuters"]
     housing_comm = ", ".join(f"{c['housing_share']:.0f}%" for c in comm)
+    no_cd = int(exi.loc["no community district", "rows"])
+    rate_unlocated = 1000 * (n_all + no_cd) / d.person_years.sum()   # same resident-years, unlocated complaints added
     lines = [
         "# Q7. Complaints by community district",
         "",
@@ -643,7 +762,8 @@ def _write_answer(out_dir, v):
         f"- **Rate** = complaints per 1,000 residents a year: complaints divided by resident-years, using the "
         f"{v['pops']} (rule: 2010 Census for days before {POP_2020_FROM_YEAR}, 2020 Census from "
         f"{POP_2020_FROM_YEAR}). Only complete days count ({len(v['days']):,} days), so partial days don't dilute rates. "
-        f"Citywide: {v['city_rate']:,.0f} per 1,000 a year.",
+        f"Across the {len(d)} districts: {v['city_rate']:,.0f} per 1,000 a year ({rate_unlocated:,.0f} counting the "
+        f"{no_cd:,} complaints with no district).",
         f"- **Rows.** Of the default set's {int(exi.rows.iloc[0]):,} rows, {n_all:,} complaints "
         f"({exi.loc[MAPPED, 'pct']:.1f}%) map to one of the {len(d)} districts. Left out: " +
         "; ".join(f"{_md(k)} {int(r.rows):,} ({r.pct:.1f}%)" for k, r in exi.iloc[1:-1].iterrows()) + ".",
@@ -652,7 +772,8 @@ def _write_answer(out_dir, v):
         *([f"- **Commuter district.** " + " ".join(commuter_sentence(c, f) for c in comm) +
            f" Housing (heat, hot water, conditions) is {housing_comm} of its complaints. "
            f"Spread: {f['ratio']:.1f}-fold across the other {f['n_rated']} districts, {f['ratio_all']:.1f}-fold "
-           f"across all {f['n_districts']}. It is mapped and counted in its borough and the citywide rate, but left "
+           f"across all {f['n_districts']}. It is mapped and counted in its borough and the rate across the "
+           f"{f['n_districts']} districts, but left "
            "out of rankings, top/bottom groups and income comparisons."] if comm else []),
         "",
         "![Complaints per 1,000 residents by community district, with three insights](figs/q07_district_map.png)",

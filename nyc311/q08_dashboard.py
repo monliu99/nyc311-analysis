@@ -13,8 +13,9 @@ Complaint set: rules.COMPLAINTS_SQL (not is_test, not dup_key, not an informatio
 opened on a complete day (a date with in-order rows and no possibly_incomplete_day flag), so a rate per
 resident-year divides complaints by the days they cover. Population: 2010 Census for days before 2015 and 2020
 Census from 2015 on (the same rule as Q7). Totals labeled "all N districts" cover the mapped districts only (no
-parks, airports or unlocated complaints). Every number on the map, in the report and in outputs/answers/q08.md
-is computed here; the same code runs on one month or twelve years.
+parks, airports or unlocated complaints). Commuter districts (Q7's COMMUTER_CDS: Manhattan 5, Midtown) are shaded at
+their rate but not ranked, as in Q7: ranks run over the other districts. Every number on the map, in the report and
+in outputs/answers/q08.md is computed here; the same code runs on one month or twelve years.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ import pandas as pd
 
 from nyc311 import geo, rules
 from nyc311.clean import clean_glob
+from nyc311.q07_geography import COMMUTER_CDS, COMMUTER_LABEL   # one definition: Q7's commuter districts
 from nyc311.report import Report
 
 STAGE = "q08_dashboard"
@@ -207,6 +209,21 @@ def classify(rates, k=N_CLASSES):
     return cls, edges
 
 
+def rank_districts(boro_cd, rate):
+    """Rank 1 = highest rate among districts that are not commuter districts (q07_geography.COMMUTER_CDS); commuter
+    districts get no rank (<NA>): their per-resident rate is not comparable with residential districts (as in Q7)."""
+    commuter = pd.Series(boro_cd).astype(int).isin(COMMUTER_CDS)
+    rate = pd.Series(rate, dtype=float)
+    return rate.where(~commuter.to_numpy()).rank(ascending=False, method="first").astype("Int64")
+
+
+def rank_text(row, rank):
+    """'rank 3 of 58', or 'commuter district, not ranked'."""
+    if row.get("commuter", False):
+        return f"{COMMUTER_LABEL}, not ranked"
+    return f"rank {int(rank)} of {int(row.get('n_ranked', row['n_districts']))}"
+
+
 def ramp(line, k=N_CLASSES):
     """k tints of one hue, light to dark (Q7's ramp, with a darker lightest class so it stands out from the gray
     base map and the gray parks)."""
@@ -299,8 +316,10 @@ def district_tables(con, demo, days_by_year, themes):
     d["n"] = d.boro_cd.map(base.n).fillna(0).astype(int)
     d["n_unresolved"] = d.boro_cd.map(base.n_unresolved).fillna(0).astype(int)
     d["rate"] = 1000 * d.n / d.person_years
-    d["rank"] = d.rate.rank(ascending=False, method="first").astype(int)
+    d["commuter"] = d.boro_cd.isin(COMMUTER_CDS)
+    d["rank"] = rank_districts(d.boro_cd, d.rate)
     d["n_districts"] = len(d)
+    d["n_ranked"] = int((~d.commuter).sum())
     d["low_n"] = d.n < MIN_N
     d["pct_unresolved"] = 100 * d.n_unresolved / d.n.where(d.n > 0)
     d["rate_class"] = classify(d.rate)[0]
@@ -320,7 +339,7 @@ def district_tables(con, demo, days_by_year, themes):
         n = cats[cats.category == t].set_index("boro_cd").n
         d[f"{col}_n"] = d.boro_cd.map(n).fillna(0).astype(int)
         d[f"{col}_rate"] = 1000 * d[f"{col}_n"] / d.person_years
-        d[f"{col}_rank"] = d[f"{col}_rate"].rank(ascending=False, method="first").astype(int)
+        d[f"{col}_rank"] = rank_districts(d.boro_cd, d[f"{col}_rate"])
         d[f"{col}_class"] = classify(d[f"{col}_rate"])[0]
 
     top = con.sql(f"""select boro_cd, canonical_type, n from (
@@ -524,9 +543,11 @@ def district_popup(row, top, years, city):
     comparison figures (`city`) are totals over all mapped districts, and are labeled that way."""
     n = int(row["n"])
     area = f"all {int(row['n_districts'])} districts"
-    rate_line = (f"<b>{fmt_rate(row['rate'])}</b> ({area}: {fmt_rate(city['rate'])}; rank {int(row['rank'])} of "
-                 f"{int(row['n_districts'])})")
+    rate_line = f"<b>{fmt_rate(row['rate'])}</b> ({area}: {fmt_rate(city['rate'])}; {rank_text(row, row['rank'])})"
     rows = [_row("Complaints", f"<b>{n:,}</b>"), _row("Per 1,000 residents a year", rate_line)]
+    if row.get("commuter", False):
+        rows.append(_row("", f"<i>{COMMUTER_LABEL}: many workers and visitors, few residents, so its rate per "
+                             "resident is not comparable with residential districts</i>"))
     if row.get("low_n"):
         rows.append(_row("", f"<i>fewer than {MIN_N} complaints: rate unstable</i>"))
     if int(row["n_closed"]) >= MIN_N:
@@ -582,7 +603,7 @@ def _pop_text(r, years_used):
 
 def tooltip(row, what, rate, rank):
     tip = (f"<b>{_e(row['label'])}</b><br>{_e(what)}: {fmt_rate(rate)} per 1,000 residents a year "
-           f"(rank {int(rank)} of {int(row['n_districts'])})")
+           f"({rank_text(row, rank)})")
     if row.get("low_n"):
         tip += f"<br><i>fewer than {MIN_N} complaints: rate unstable</i>"
     return tip + "<br><span class='q08-hint'>Click for details</span>"
@@ -731,7 +752,7 @@ def build_map(simple, d, themes, popups, special_n, rows, luts, texts):
             head = ""
             if ti is not None:
                 head = (f'<div class="q08-theme"><b>{_e(what)}</b>: {fmt_rate(r[rate_col])} per 1,000 residents a '
-                        f'year (rank {int(r[rank_col])} of {int(r.n_districts)}; '
+                        f'year ({rank_text(r, r[rank_col])}; '
                         f'{int(r[f"{theme_col(ti)}_n"]):,} complaints)</div>')
             feats.append({"type": "Feature", "geometry": f["geometry"],
                           "properties": {"boro_cd": cd, "fill": colors[int(r[cls_col])],
@@ -838,7 +859,7 @@ def _n_incomplete_days(con, src):
 
 def _summary_csv(d, themes):
     cols = ["boro_cd", "borough", "cd_number", "cd_name", "population_2010", "population_2020", "person_years", "n",
-            "rate", "rank", "rate_class", "low_n", "n_unresolved", "pct_unresolved", "n_closed", "median_days",
+            "rate", "rank", "commuter", "rate_class", "low_n", "n_unresolved", "pct_unresolved", "n_closed", "median_days",
             "adj_pct", "top_types"]
     out = d[cols].rename(columns={"rate": "rate_per_1000_yr"})
     for i, t in enumerate(themes):
@@ -859,6 +880,19 @@ def _excluded(res):
             "rows": w["all rows"]}
 
 
+def _commuter_note(d):
+    """' Manhattan 5 (Midtown Business District) is a commuter district: shaded at its rate, not ranked (ranks run
+    over the other 58).' (empty without commuter districts)."""
+    comm = d[d.commuter]
+    if comm.empty:
+        return ""
+    names = ", ".join(_e(x) for x in comm.label)
+    verb = "is a" if len(comm) == 1 else "are"
+    return (f" {names} {verb} {COMMUTER_LABEL}{'' if len(comm) == 1 else 's'} (many workers and visitors, few "
+            f"residents): shaded at {'its' if len(comm) == 1 else 'their'} rate but not ranked; ranks run over the "
+            f"other {int((~d.commuter).sum())}.")
+
+
 def _panel_html(res):
     x, p, d = _excluded(res), res["point_info"], res["districts"]
     yrs = list(res["days_by_year"].index)
@@ -874,7 +908,7 @@ def _panel_html(res):
         '<div id="q08-panel"><div class="q08-title">NYC 311 complaints by community district</div>'
         f'<div class="q08-meta">{_e(res["period_long"])}: {x["mapped"]:,} complaints in {len(d)} districts, '
         f'{res["n_days"]:,} complete days. All {len(d)} districts: {fmt_rate(res["city"]["rate"])} per 1,000 '
-        'residents a year.</div>'
+        f'residents a year.{_commuter_note(d)}</div>'
         '<div id="q08-legend">{legend}</div>'
         '<div class="q08-hint">Hover or click a district for details; layers at bottom right.</div>'
         '<details id="q08-more" open><summary>About this map</summary>'
@@ -912,14 +946,19 @@ def _report(cfg, res):
             f"earlier complete days: {_pct1(ru['pct_before'])} of {ru['n_before']:,}",
             f"districts with < {MIN_N} complaints (rate flagged): {int(d.low_n.sum())}; with < {MIN_N} closed "
             f"(median hidden): {int((d.n_closed < MIN_N).sum())}")
-    show = d.sort_values("rank")[["rank", "label", "n", "rate", "n_closed", "median_days", "adj_pct",
-                                  "pct_unresolved"]]
+    show = d.sort_values("rate", ascending=False)[["rank", "label", "n", "rate", "n_closed", "median_days",
+                                                   "adj_pct", "pct_unresolved"]]
+    comm = d[d.commuter]
+    if len(comm):
+        rep.add(f"{COMMUTER_LABEL}s (shaded, not ranked; rank <NA> below): " + "; ".join(
+            f"{r.label} {fmt_rate(r.rate)}" for r in comm.itertuples()) + f"; ranks run 1-{int(d.n_ranked.iloc[0])}")
     rep.table(show, max_rows=10, title="Highest rates (popup values)")
     rep.table(show.tail(5), title="Lowest rates")
+    ranked = d[~d.commuter]
     th = pd.DataFrame([{"layer": t, "complaints": int(d[f"{theme_col(i)}_n"].sum()),
                         "all_districts_rate": c[f"{theme_col(i)}_rate"],
-                        "highest": d.loc[d[f"{theme_col(i)}_rate"].idxmax(), "label"],
-                        "highest_rate": d[f"{theme_col(i)}_rate"].max()} for i, t in enumerate(res["themes"])])
+                        "highest_ranked": ranked.loc[ranked[f"{theme_col(i)}_rate"].idxmax(), "label"],
+                        "highest_rate": ranked[f"{theme_col(i)}_rate"].max()} for i, t in enumerate(res["themes"])])
     rep.table(th, title=f"Category shadings (the {len(res['themes'])} largest categories)")
     rep.add("", f"points: {len(p['window_days'])} most recent complete days ({res['window_label']}, "
                 f"{p['n_skipped']} incomplete days skipped; data end {fmt_date(p['data_end'])}, "
@@ -935,14 +974,20 @@ def _report(cfg, res):
 def _write_answer(cfg, res):
     d, p, x, c = res["districts"], res["point_info"], _excluded(res), res["city"]
     themes = res["themes"]
-    top = d.sort_values("rank").iloc[0]
-    low = d.sort_values("rank").iloc[-1]
+    ranked, comm = d[~d.commuter].sort_values("rank"), d[d.commuter].sort_values("rate", ascending=False)
+    n_ranked = len(ranked)
+    top, low = ranked.iloc[0], ranked.iloc[-1]
     tt = res["top_types"][res["top_types"].boro_cd == top.boro_cd]
     yrs = list(res["days_by_year"].index)
     area = f"all {len(d)} districts"
-    hi_themes = "; ".join(f"{t}: {d.loc[d[f'{theme_col(i)}_rate'].idxmax(), 'label']} "
-                          f"({fmt_rate(d[f'{theme_col(i)}_rate'].max())} per 1,000 a year; {area}: "
+    hi_themes = "; ".join(f"{t}: {ranked.loc[ranked[f'{theme_col(i)}_rate'].idxmax(), 'label']} "
+                          f"({fmt_rate(ranked[f'{theme_col(i)}_rate'].max())} per 1,000 a year; {area}: "
                           f"{fmt_rate(c[f'{theme_col(i)}_rate'])})" for i, t in enumerate(themes))
+    one = len(comm) == 1
+    commuters = (" " + " and ".join(f"{r.label}, at {fmt_rate(r.rate)}," for r in comm.itertuples())
+                 + f" {'is a' if one else 'are'} {COMMUTER_LABEL}{'' if one else 's'} (many workers and visitors, few "
+                 f"residents): shaded at {'its' if one else 'their'} rate but not ranked, as in Q7, so ranks run "
+                 f"from 1 to {n_ranked}." if len(comm) else "")
     adj_txt = (f"; median time to close {fmt_days(top.median_days)} ({area}: {fmt_days(c['median_days'])}), "
                f"{fmt_pct(top.adj_pct)} vs. the citywide typical time for the same complaint types and years"
                if top.n_closed >= MIN_N else f"; fewer than {MIN_N} closed complaints, so no median is shown")
@@ -962,10 +1007,13 @@ def _write_answer(cfg, res):
              "window ends there." if p["n_days_after"] else "")
     table = ["| Rank | District | Complaints | Per 1,000 residents a year | Median time to close | vs. typical | "
              "Unresolved |", "|---|---|---|---|---|---|---|"]
-    for r in d.sort_values("rank").head(5).itertuples():
+    head = ranked.head(5)
+    shown = pd.concat([head, comm[comm.rate >= head.rate.min()]]).sort_values("rate", ascending=False)
+    for r in shown.itertuples():
         med = fmt_days(r.median_days) if r.n_closed >= MIN_N else "n/a"
         adj = fmt_pct(r.adj_pct) if r.n_closed >= MIN_N else "n/a"
-        table.append(f"| {r.rank} | {r.label} | {r.n:,} | {fmt_rate(r.rate)} | {med} | {adj} | "
+        rank = f"not ranked ({COMMUTER_LABEL})" if r.commuter else str(int(r.rank))
+        table.append(f"| {rank} | {r.label} | {r.n:,} | {fmt_rate(r.rate)} | {med} | {adj} | "
                      f"{r.pct_unresolved:.1f}% |")
     lines = [
         "# Q8. Neighborhood dashboard",
@@ -977,15 +1025,17 @@ def _write_answer(cfg, res):
         "and the Leaflet library load from the internet). It is embedded live below.",
         f"- **District layer.** The {len(d)} community districts shaded by complaints per 1,000 residents a year, in "
         f"{N_CLASSES} quantile classes. The rate divides the {x['mapped']:,} complaints opened on {res['n_days']:,} "
-        f"complete days by resident-years, using {pop}. Rate across {area}: {fmt_rate(c['rate'])}. Highest: "
-        f"{top.label} "
-        f"({fmt_rate(top.rate)}); lowest: {low.label} ({fmt_rate(low.rate)}).",
-        f"- **Hover and click.** Hovering shows a district's name, rate and rank. Clicking opens its details: "
+        f"complete days by resident-years, using {pop}. Rate across {area}: {fmt_rate(c['rate'])}. "
+        f"Highest{' ranked' if len(comm) else ''}: {top.label} ({fmt_rate(top.rate)}); lowest: {low.label} "
+        f"({fmt_rate(low.rate)}).{commuters}",
+        f"- **Hover and click.** Hovering shows a district's name, rate and rank"
+        + (f" (for a {COMMUTER_LABEL}: \"{COMMUTER_LABEL}, not ranked\")" if len(comm) else "")
+        + ". Clicking opens its details: "
         f"complaints, rate and rank, the top {TOP_TYPES} complaint types with counts and shares, median time to close "
         "with the gap to the citywide typical time for the same complaint types and years (Q4's mix adjustment), the "
         "share still unresolved, and a bar for each year's rate with a by-year table.",
         f"- **Example popup: {top.label}.** {int(top.n):,} complaints, {fmt_rate(top.rate)} per 1,000 residents a "
-        f"year (rank 1 of {len(d)})" + adj_txt + f"; {top.pct_unresolved:.1f}% still unresolved ({area}: "
+        f"year (rank 1 of {n_ranked})" + adj_txt + f"; {top.pct_unresolved:.1f}% still unresolved ({area}: "
         f"{c['pct_unresolved']:.1f}%). Top types: " + "; ".join(
             f"{r.canonical_type} {r.n:,} ({r.pct:.0f}%)" for r in tt.itertuples()) + ".",
         f"- **Other shadings.** Radio buttons switch the shading to the {len(themes)} largest complaint categories "
@@ -1006,7 +1056,10 @@ def _write_answer(cfg, res):
         f"and airports (`special_area_cd`, shown in gray without a rate) and {x['nocd']:,} with no community "
         f"district are not in the shading; {p['no_coords']:,} complaints in the point window have no coordinates.",
         f"- **Reading it carefully.** Rates are per resident, so districts with many workers or visitors and few "
-        f"residents look high; {unresolved_caveat(res['recent_unresolved'])}; the totals labeled \"{area}\" "
+        f"residents look high"
+        + (f" ({', '.join(comm.label)} {'is' if one else 'are'} marked as {'a ' if one else ''}{COMMUTER_LABEL}"
+           f"{'' if one else 's'} and left out of the ranks; others with many visitors are not)" if len(comm) else "")
+        + f"; {unresolved_caveat(res['recent_unresolved'])}; the totals labeled \"{area}\" "
         "leave out parks, airports and unlocated complaints; the comparisons describe where complaints are filed, "
         "not why. District outlines are DCP's current "
         f"boundaries, simplified to about 10 m ({res['vertices'][0]:,} to {res['vertices'][1]:,} vertices) to keep "

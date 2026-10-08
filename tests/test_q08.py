@@ -101,6 +101,32 @@ def test_popup_escapes_text_and_suppresses_thin_medians():
     assert "all 59 districts" in html and "(city " not in html  # totals cover the districts, not the city
 
 
+def test_commuter_districts_come_from_q07_and_are_not_ranked():
+    from nyc311 import q07_geography as q7
+    assert q8.COMMUTER_CDS is q7.COMMUTER_CDS and q8.COMMUTER_LABEL == q7.COMMUTER_LABEL   # one definition
+    d = pd.DataFrame({"boro_cd": [105, 112, 108, 205], "rate": [470.0, 404.0, 139.0, 356.0]})
+    rank = q8.rank_districts(d.boro_cd, d.rate)
+    assert rank.isna().tolist() == [True, False, False, False]
+    assert rank.dropna().astype(int).tolist() == [1, 3, 2]
+    assert str(rank.dtype) == "Int64"
+
+
+def test_commuter_district_popup_and_tooltip_say_not_ranked():
+    base = {"n": 5000, "rate": 470.0, "n_districts": 59, "n_ranked": 58, "n_closed": 10, "median_days": 2.0,
+            "adj_pct": -8.0, "pct_unresolved": 3.4, "low_n": False}
+    city = {"rate": 242.0, "median_days": 1.7, "pct_unresolved": 1.9}
+    empty = pd.DataFrame(columns=["year", "n", "rate"])
+    midtown = pd.Series({**base, "label": "Manhattan 5 (Midtown Business District)", "rank": pd.NA, "commuter": True})
+    pop, tip = q8.district_popup(midtown, pd.DataFrame(), empty, city), q8.tooltip(midtown, "All", 470.0, pd.NA)
+    for s in (pop, tip):
+        assert q8.COMMUTER_LABEL in s and "not ranked" in s and "rank " not in s.replace("not ranked", "")
+    assert "470" in pop and "all 59 districts: 242" in pop      # the rate is still shown
+    ranked = pd.Series({**base, "label": "Manhattan 12 (Washington Heights, Inwood)", "rank": 1, "commuter": False})
+    assert "rank 1 of 58" in q8.district_popup(ranked, pd.DataFrame(), empty, city)
+    assert "rank 1 of 58" in q8.tooltip(ranked, "All", 404.0, 1) and "not ranked" not in q8.tooltip(ranked, "All",
+                                                                                                    404.0, 1)
+
+
 def test_unresolved_caveat_follows_the_numbers():
     base = {"days": 30, "label": "Aug 24\N{EN DASH}Sep 22, 2021", "n_recent": 1000, "n_before": 50000}
     lower = q8.unresolved_caveat({**base, "pct_recent": 1.4, "pct_before": 3.0})
@@ -142,7 +168,15 @@ def test_rates_are_complaints_over_resident_years(res):
     d = res["districts"]
     assert np.allclose(d.rate, 1000 * d.n / d.person_years)
     assert (d.rate >= 0).all() and (d.person_years > 0).all()
-    assert d["rank"].tolist() == d.rate.rank(ascending=False, method="first").astype(int).tolist()
+    # ranks: the 58 districts that are not commuter districts, 1..58 by rate; commuter districts unranked
+    assert set(d.boro_cd[d.commuter]) == set(q8.COMMUTER_CDS) and d["rank"][d.commuter].isna().all()
+    r = d[~d.commuter]
+    assert (d.n_ranked == len(r)).all() and sorted(r["rank"].astype(int)) == list(range(1, len(r) + 1))
+    assert r["rank"].astype(int).tolist() == r.rate.rank(ascending=False, method="first").astype(int).tolist()
+    for i in range(len(res["themes"])):
+        col = q8.theme_col(i)
+        assert d[f"{col}_rank"][d.commuter].isna().all()
+        assert sorted(r[f"{col}_rank"].astype(int)) == list(range(1, len(r) + 1))
     assert res["period"][1].year < q8.POP_2020_FROM_YEAR  # the sample is all before the population switch
     assert np.allclose(d.person_years, d.population_2010 * res["n_days"] / q8.DAYS_PER_YEAR)
     assert 0 <= d.pct_unresolved.min() and d.pct_unresolved.max() <= 100
@@ -363,6 +397,30 @@ def test_report_block_and_findings(res, cleaned_cfg):
     assert not re.search(r"\{[A-Za-z_]", text)  # no f-string placeholder left unformatted
     panel = re.search(r'<div id="q08-panel">.*?</details></div>', (out / q8.DASHBOARD).read_text(), re.S).group(0)
     assert not re.search(r"\{[A-Za-z_]", panel) and "nan" not in panel.split()
+
+
+def test_findings_and_map_leave_the_commuter_district_out_of_the_ranking(res, cleaned_cfg, html_text):
+    d = res["districts"]
+    n_ranked = int((~d.commuter).sum())
+    text = (cleaned_cfg.out_dir / "answers" / "q08.md").read_text()
+    first = d[~d.commuter].sort_values("rate", ascending=False).iloc[0]
+    example = next(x for x in text.splitlines() if x.startswith("- **Example popup"))
+    assert first.label in example and f"(rank 1 of {n_ranked})" in example
+    assert f"of {len(d)})" not in text                     # no rank out of all 59
+    layer = next(x for x in text.splitlines() if x.startswith("- **District layer.**"))
+    fifth = d[~d.commuter].rate.nlargest(5).min()
+    for c in d[d.commuter].itertuples():
+        assert c.label in layer and q8.COMMUTER_LABEL in layer and q8.fmt_rate(c.rate) in layer
+        in_table = f"| not ranked ({q8.COMMUTER_LABEL}) | {c.label} |" in text
+        assert in_table == (c.rate >= fifth)       # listed in the top table where its rate would put it
+        pop = res["popups"][int(c.boro_cd)]
+        assert "not ranked" in pop and q8.fmt_rate(c.rate) in pop
+        assert q8.js_escape(pop) in html_text
+    assert f"Highest ranked: {first.label} ({q8.fmt_rate(first.rate)})" in layer
+    rows = [x for x in text.splitlines() if re.match(r"\| \d+ \| ", x)]
+    assert [int(x.split("|")[1]) for x in rows] == list(range(1, len(rows) + 1))
+    summary = pd.read_csv(cleaned_cfg.out_dir / "agg" / "q08_district_summary.csv")
+    assert summary["rank"][summary.commuter].isna().all() and summary["rank"].max() == n_ranked
 
 
 def test_short_period_is_said_in_the_findings(res, cleaned_cfg):

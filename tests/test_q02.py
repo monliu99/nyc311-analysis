@@ -1,4 +1,5 @@
 """Q2 (daily volume, closing times, week patterns): pure helpers, the 20-file sample, and a multi-year pull."""
+import re
 import sys
 from pathlib import Path
 
@@ -68,6 +69,30 @@ def test_surge_day_excess_and_its_usual_level_use_the_same_baseline():
     assert r.n == 43 and r.baseline == pytest.approx(usual) and r.excess == pytest.approx(43 - usual)
     a_excess = 40 - 10
     assert r.drivers.startswith(f"A +{a_excess} ({100 * a_excess / (43 - usual):.0f}% of excess)")
+
+
+def test_agency_spans_print_dates_in_the_findings_style():
+    """DuckDB hands dates back as Timestamps; the findings print them as 'Jan 1, 2010', never '2010-01-01 00:00:00'."""
+    spans = pd.DataFrame({"agency": ["DOF", "OSE"], "first_day": pd.to_datetime(["2010-01-01", "2020-06-08"]),
+                          "last_day": pd.to_datetime(["2019-06-21", "2021-11-19"]), "n": [511020, 70555],
+                          "change": ["stops early", "starts late"]})
+    text = q2.agency_change_text(spans)
+    assert "DOF stops early (Jan 1, 2010 to Jun 21, 2019, 511,020 requests)" in text
+    assert "OSE starts late (Jun 8, 2020 to Nov 19, 2021, 70,555 requests)" in text
+    assert "00:00:00" not in text and "2010-01-01" not in text
+    one_day = spans.assign(last_day=spans.first_day).head(1)
+    assert "(Jan 1, 2010, 511,020 requests)" in q2.agency_change_text(one_day)
+    assert q2.agency_change_text(spans.head(0)) == "none"
+
+
+def test_coverage_sentence_adds_up_on_its_own():
+    s = q2.coverage_sentence(n_base=1000, n_closed=900, n_none=95, n_placeholder=5)
+    assert s == "900 of 1,000 requests (90.0%) have a close date; 95 have none and 5 have a 1900-01-01 placeholder."
+    s0 = q2.coverage_sentence(n_base=1000, n_closed=900, n_none=100, n_placeholder=0)
+    assert s0 == "900 of 1,000 requests (90.0%) have a close date; 100 have none."
+    # rows the three groups don't cover are counted rather than silently dropped
+    s1 = q2.coverage_sentence(n_base=1000, n_closed=900, n_none=90, n_placeholder=5)
+    assert s1.endswith("90 have none, 5 have a 1900-01-01 placeholder and 5 are neither (flags missing).")
 
 
 def test_requests_outside_the_window_are_mentioned_only_when_there_are_some():
@@ -195,6 +220,18 @@ def test_outputs_charts_and_answer_are_written(q02):
     assert "write the prose" not in text and "Drafted" not in text
     n = con.sql(f"select count(*) from {src} where {BASE}").fetchone()[0]
     assert f"{n:,}" in note
+    assert not re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", text)  # no raw timestamps in the findings
+
+
+def test_close_date_coverage_line_adds_up_to_the_requests(q02):
+    cfg, out, con, src = q02
+    text = (cfg.out_dir / "answers" / "q02.md").read_text()
+    line = next(x for x in text.splitlines() if x.startswith("- **Coverage.**"))
+    n, closed, none, ph = con.sql(f"""select count(*), count(closed), count_if(closed is null and not closed_placeholder),
+                                     count_if(closed_placeholder) from {src} where {BASE}""").fetchone()
+    assert ph > 0 and closed + none + ph == n   # the sample has 1900 placeholders, so all three groups show
+    assert f"{closed:,} of {n:,} requests (" in line
+    assert line.endswith(f"; {none:,} have none and {ph:,} have a 1900-01-01 placeholder.")
 
 
 # ---------------------------------------------------------------- several years (synthetic pull)
@@ -249,6 +286,7 @@ def test_typical_profiles_leave_out_years_after_the_profile_cutoff(years):
     assert f"peak in week {peak} " in text
     for y in later:
         assert str(y) in text.split("## (c)")[1]
+    assert not re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", text)  # agency spans etc. print readable dates
 
 
 def test_several_years_explain_flagged_days_with_missing_batches(years):

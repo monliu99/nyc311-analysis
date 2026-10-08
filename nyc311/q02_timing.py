@@ -263,6 +263,17 @@ def agency_spans(con, src, start, end):
     return df
 
 
+def agency_change_text(changed, k=10):
+    """'DOF stops early (Jan 1, 2010 to Jun 21, 2019, 511,020 requests); ...' for the first k rows of
+    agency_spans() with a change, dates in the findings' style."""
+    parts = []
+    for r in changed.head(k).itertuples(index=False):
+        first, last = _d(r.first_day), _d(r.last_day)
+        span = first if first == last else f"{first} to {last}"
+        parts.append(f"{r.agency} {r.change} ({span}, {int(r.n):,} requests)")
+    return "; ".join(parts) or "none"
+
+
 def share_by_agency_period(con, src, flag, ts, unit, start, end, among="true"):
     """Long table agency x period: rows and % with `flag` (period of `ts`), plus an '(all)' row per period."""
     p = period_sql(unit, ts)
@@ -428,6 +439,19 @@ def closing_checks(con, src, start, end):
     out["rows"] = out.rows.astype("int64")
     out["pct"] = (100 * out.rows / out.denom).round(2)
     return out.drop(columns="denom")[["check", "rows", "pct", "note"]], r.min_closed, r.max_closed
+
+
+def coverage_sentence(n_base, n_closed, n_none, n_placeholder):
+    """Close-date coverage that adds up on its own: with a close date + none + 1900 placeholder = all requests
+    (any rows outside the three groups are counted too)."""
+    groups = [f"{n_none:,} have none"]
+    if n_placeholder:
+        groups.append(f"{n_placeholder:,} have a 1900-01-01 placeholder")
+    rest = n_base - n_closed - n_none - n_placeholder
+    if rest:
+        groups.append(f"{rest:,} are neither (flags missing)")
+    tail = groups[0] if len(groups) == 1 else ", ".join(groups[:-1]) + " and " + groups[-1]
+    return f"{n_closed:,} of {n_base:,} requests ({_pct(n_closed, n_base)}) have a close date; {tail}."
 
 
 def closing_by_agency(con, src):
@@ -1046,8 +1070,7 @@ def _write_answer(cfg, v):
             for r in v["eps"].itertuples(index=False)) if len(v["eps"]) else
             "none found, or the data has no complete month a year apart to compare") + ".",
         f"- **Agencies entering or leaving** (first or last request more than {EDGE_DAYS} days inside the window): "
-        + ("; ".join(f"{r.agency} {r.change} ({r.first_day} to {r.last_day}, {r.n:,} requests)"
-                     for r in changed.head(10).itertuples(index=False)) or "none") + ".",
+        + agency_change_text(changed) + ".",
         f"- **Opening times recorded as dates only** (exactly midnight), by {unit}: " + mid_line(om) + ".",
         f"- **Channel not recorded** (`UNKNOWN` or NULL), by {unit}: "
         + (f"{chan[miss_col].iloc[0]:.1f}% in {per(chan.index[0])} -> {chan[miss_col].iloc[-1]:.1f}% in "
@@ -1062,8 +1085,8 @@ def _write_answer(cfg, v):
         "",
         "## (b) Closing times",
         "",
-        f"- **Coverage.** {n_closed:,} of {n_base:,} requests ({_pct(n_closed, n_base)}) have a close date; "
-        f"{int(chk.rows['no close date']):,} have none.",
+        "- **Coverage.** " + coverage_sentence(n_base, n_closed, int(chk.rows["no close date"]),
+                                               int(chk.rows["1900 placeholder close date"])),
         f"- **Placeholders.** {int(chk.rows['1900 placeholder close date']):,} close dates are 1900-01-01; by status "
         "and agency: " + ("; ".join(f"status {r.status}, {r.agency}: {r.n:,}" for r in ph.head(4).itertuples(index=False))
                           or "none") + f". {int(ph[ph.status != 'Closed'].n.sum()):,} of them are on requests whose "

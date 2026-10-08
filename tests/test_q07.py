@@ -137,6 +137,74 @@ def test_labels_never_overlap_even_when_anchors_coincide():
     plt.close(fig)
 
 
+def test_interior_point_is_inside_a_concave_district():
+    from matplotlib.path import Path as MplPath
+    # a U: the vertex mean (and the bounding-box center) fall in the notch, outside the shape
+    u = np.array([[0, 0], [3, 0], [3, 3], [2, 3], [2, 1], [1, 1], [1, 3], [0, 3], [0, 0]], dtype=float) * 0.01
+    outer = MplPath(u)
+    assert not outer.contains_point(u[:-1].mean(axis=0))
+    x, y = q7.interior_point(outer)
+    k = np.cos(np.radians(q7.MAP_LAT))       # distances on the ground: a degree of longitude is shorter
+    e = 0.004                                # the U's arms are 0.01 thick: the point sits near their middle
+    assert all(outer.contains_point(p) for p in [(x, y), (x - e / k, y), (x + e / k, y), (x, y - e), (x, y + e)]) \
+        or all(outer.contains_point(p) for p in [(x, y), (x - e, y), (x + e, y), (x, y - e), (x, y + e)])
+    hole = MplPath(np.array([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8], [0.2, 0.2]]) * 0.03)
+    square = MplPath(np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], dtype=float) * 0.03)
+    x, y = q7.interior_point(square, [hole])
+    assert square.contains_point((x, y)) and not hole.contains_point((x, y))
+
+
+def _segments_cross(p1, p2, q1, q2):
+    def orient(a, b, c):
+        return np.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+    return orient(p1, p2, q1) != orient(p1, p2, q2) and orient(q1, q2, p1) != orient(q1, q2, p2)
+
+
+def test_labels_sit_off_the_land_with_visible_leaders_to_their_own_districts():
+    """Two neighboring districts on the edge of a land mass (like Manhattan 12 and Bronx 5): each label goes to open
+    space, never covers the other district's anchor, and a dark leader line runs from it to a dot on its own anchor."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 10)
+    ax.axis("off")
+    ax.add_patch(Rectangle((4, 0), 6, 10, color="#888888"))   # land on the right, open space on the left
+    items = [(4.6, 6.0, "Manhattan 12\n404"), (5.4, 6.2, "Bronx 5\n356"), (4.5, 3.0, "Manhattan 8\n139")]
+    boxes = q7.place_labels(fig, ax, items)
+    fig.canvas.draw()
+    to_px = ax.transData.transform
+    anchors = [to_px((x, y)) for x, y, _ in items]
+    land_x0 = to_px((4, 0))[0]
+    notes = [t for t in ax.texts if t.get_text() in {s for _, _, s in items}]
+    assert len(boxes) == len(items) == len(notes)
+    for i, b in enumerate(boxes):
+        assert b.x1 <= land_x0 + 0.1 * b.width, items[i][2]            # in the open space, not on the land
+        for j, a in enumerate(anchors):
+            if j != i:
+                assert not b.expanded(1.1, 1.1).contains(*a), (i, j)    # never over another district's anchor
+        for j in range(i + 1, len(boxes)):
+            assert not b.overlaps(boxes[j])
+    for t in notes:
+        arrow = t.arrow_patch
+        assert arrow is not None and arrow.get_linewidth() >= 0.9       # a leader line that shows at report width
+        r, g, bl = mcolors.to_rgb(arrow.get_edgecolor())
+        assert 0.299 * r + 0.587 * g + 0.114 * bl < 0.35                # dark, not faint gray
+    # leaders (label center to anchor) don't cross each other
+    centers = [((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2) for b in boxes]
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            assert not _segments_cross(centers[i], anchors[i], centers[j], anchors[j]), (i, j)
+    # a dot marks every anchor
+    dots = [ln for ln in ax.lines if ln.get_marker() == "o"]
+    xy = {tuple(np.round(np.column_stack(ln.get_data())[0], 6)) for ln in dots}
+    assert {(round(x, 6), round(y, 6)) for x, y, _ in items} <= xy
+    plt.close(fig)
+
+
 # ------------------------------------------------------------------ the module on the sample
 @pytest.fixture(scope="module")
 def q7_out(cleaned_cfg):
@@ -218,3 +286,18 @@ def test_outputs_written(q7_out, cleaned_cfg):
         assert insight in text
     assert q7.COMMUTER_LABEL in text
     assert (out / "reports" / "q07_geography.txt").read_text().startswith("===== BEGIN q07_geography =====")
+
+
+def test_rate_over_the_districts_is_labeled_as_such(q7_out, cleaned_cfg):
+    """The headline rate covers the 59 districts only; the rate counting complaints with no district is given too."""
+    d, ex = q7_out["districts"], q7_out["exclusions"].set_index("step")
+    text = (cleaned_cfg.out_dir / "answers" / "q07.md").read_text()
+    assert "Citywide:" not in text and "citywide rate" not in text
+    rate = 1000 * d.n.sum() / d.person_years.sum()
+    no_cd = int(ex.loc["no community district", "rows"])
+    with_unlocated = 1000 * (d.n.sum() + no_cd) / d.person_years.sum()
+    assert with_unlocated > rate
+    assert (f"Across the {len(d)} districts: {rate:,.0f} per 1,000 a year ({with_unlocated:,.0f} counting the "
+            f"{no_cd:,} complaints with no district)") in text
+    block = (cleaned_cfg.out_dir / "reports" / "q07_geography.txt").read_text()
+    assert f"rate across the {len(d)} districts: {rate:,.1f}" in block
