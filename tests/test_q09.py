@@ -142,6 +142,73 @@ def test_title_follows_the_evidence_not_an_assertion():
     assert "\N{MINUS SIGN}0.19" in sub and "p 0.17" in sub and "55" in sub
 
 
+def _slopes(p_district=0.012, within=(-0.26, -3.8, 3.3), p_puma=0.14):
+    w, lo, hi = within
+    return pd.DataFrame([
+        {"unit": "district", "metric": "adj_pct", "model": "all", "n": 58, "per_doubling": -2.5, "ci_low": -4.7,
+         "ci_high": -0.3, "p": p_district},
+        {"unit": "district", "metric": "adj_pct", "model": "within borough", "n": 58, "per_doubling": w,
+         "ci_low": lo, "ci_high": hi, "p": 0.88},
+        {"unit": "PUMA", "metric": "adj_pct", "model": "all", "n": 55, "per_doubling": -1.9, "ci_low": -4.3,
+         "ci_high": 0.6, "p": p_puma},
+        {"unit": "PUMA", "metric": "adj_pct", "model": "within borough", "n": 55, "per_doubling": 0.0,
+         "ci_low": -3.4, "ci_high": 3.3, "p": 0.99}])
+
+
+def test_income_tilt_is_a_significant_citywide_fit_with_its_within_borough_fit():
+    corr = pd.DataFrame([{"unit": "district", "metric": "adj_pct", "rho": -0.19},
+                         {"unit": "PUMA", "metric": "adj_pct", "rho": -0.11}])
+    tilt = q9.income_tilt(_slopes(), "adj_pct", corr)
+    assert tilt["unit"] == "district" and tilt["n"] == 58 and tilt["per_doubling"] == -2.5
+    assert (tilt["within_low"], tilt["within_high"]) == (-3.8, 3.3) and tilt["rho"] == -0.19
+    assert q9.income_tilt(_slopes(p_puma=0.01), "adj_pct", corr)["unit"] == "PUMA"   # income areas come first
+    assert q9.income_tilt(_slopes(p_district=0.2), "adj_pct", corr) is None
+    assert q9.income_tilt(_slopes(), "excess_pts_mix", corr) is None
+
+
+def test_title_names_a_citywide_tilt_when_only_a_linear_fit_is_significant():
+    t, u = _s(-0.11, 0.43), _s(-0.23, 0.09)
+    tilt = {"unit": "district", "n": 58, "per_doubling": -2.5, "p": 0.024, "ci_low": -4.7, "ci_high": -0.3,
+            "within": -0.26, "within_low": -3.8, "within_high": 3.3, "rho": -0.19}
+    title = q9.equity_title(t, u, None, None, t_tilt=tilt)
+    assert "no clear link" not in title.lower()
+    assert title.startswith("Small citywide tilt") and "lower-income districts" in title and "2.5%" in title
+    assert "disappears within boroughs" in title and len(title) <= 160
+    held = q9.equity_title(t, u, None, None, t_tilt={**tilt, "within": -2.2, "within_low": -3.9, "within_high": -0.5})
+    assert "holds within boroughs" in held
+    up = q9.equity_title(t, u, None, None, u_tilt={**tilt, "per_doubling": 0.08})
+    assert "higher-income districts" in up and "left open" in up
+    sub = q9.equity_subtitle(t, u, t_tilt=tilt)
+    assert "58 districts" in sub and "p 0.02" in sub and "\N{MINUS SIGN}2.5%" in sub
+    # a significant rank correlation across income areas still leads; the tilt does not replace it
+    assert q9.equity_title(_s(-0.6, 0.0001), u, (-9.0, -3.0), None, t_tilt=tilt).startswith("Strong")
+    assert "no clear link" in q9.equity_title(t, u).lower()
+
+
+def _years(n_unresolved):
+    yr = pd.DataFrame({"year": range(2010, 2010 + len(n_unresolved)), "n": 1_000_000, "n_unresolved": n_unresolved,
+                       "top_unresolved_category": "Trees & parks", "top_category_pct": 61.0})
+    yr["pct_unresolved"] = 100 * yr.n_unresolved / yr.n
+    return yr
+
+
+def test_peak_year_reports_count_share_and_rate_vs_the_median_year():
+    yr = _years([27000, 76000, 18000, 18000, 16000, 16000, 15000, 14000, 11000, 12000, 13000, 11000])
+    pk = q9.peak_year(yr)
+    assert pk["year"] == 2011 and pk["n_unresolved"] == 76000 and pk["n_years"] == 12
+    assert pk["share_pct"] == pytest.approx(100 * 76000 / yr.n_unresolved.sum())
+    assert pk["median_pct"] == pytest.approx(yr.pct_unresolved.median())
+    assert pk["ratio"] == pytest.approx(7.6 / yr.pct_unresolved.median()) and pk["stands_out"]
+    s = q9.peak_year_sentence(pk)
+    for part in ["2011", "76,000", f"{pk['share_pct']:.0f}%", "7.6%", "median year", "never closed",
+                 "cannot show", "Trees & parks"]:
+        assert part in s, part
+    flat = q9.peak_year(_years([15000, 16000, 15000, 14000]))
+    assert not flat["stands_out"] and "never closed" not in q9.peak_year_sentence(flat)
+    assert "No year stands out" in q9.peak_year_sentence(flat)
+    assert q9.peak_year(_years([15000, 16000])) is None      # too few years to call one an outlier
+
+
 # ---------- the sample ----------
 
 def test_rows_and_totals_match_q7(res, cleaned_cfg):
@@ -222,12 +289,68 @@ def test_correlations_report_n_and_valid_values(res):
     assert set(res["slopes"].unit) <= {"district", "PUMA"}
 
 
+def test_income_comparisons_leave_commuter_districts_out_as_q7(res, cleaned_cfg):
+    d = res["districts"]
+    ok = d[~d.low_n]
+    inc = ok[~ok.commuter]
+    assert ok.commuter.any()                               # the sample has Manhattan 5, so this test bites
+    pooled = {int(x) for s in res["pumas"].districts for x in str(s).split(", ")}
+    assert pooled == set(inc.boro_cd)                      # its PUMA partner stands alone, as in Q7
+    dist = res["correlations"].query("unit == 'district'").set_index("metric")
+    for m in ["adj_pct", "excess_pts_mix", "pct_unresolved", "pct_city"]:
+        assert dist.loc[m, "n"] == inc[m].notna().sum(), m
+    for r in res["slopes"].query("unit == 'district'").itertuples():
+        assert r.n == inc[r.metric].notna().sum(), r.metric
+    assert res["fifths"].districts.sum() == len(inc)
+    md = (cleaned_cfg.out_dir / "answers" / "q09.md").read_text()
+    assert "every comparison with income" in md and "stands alone" in md
+    assert "left out of per-resident rankings, correlations and income fifths" not in md
+
+
+def test_by_year_names_the_largest_unresolved_category(res):
+    yr = res["by_year"]
+    assert yr.n_unresolved.sum() == res["districts"].n_unresolved.sum()
+    has = yr[yr.n_unresolved > 0]
+    assert has.top_category_pct.between(0, 100).all()
+    assert set(has.top_unresolved_category) <= set(res["lq_categories"].key)
+
+
+@pytest.mark.parametrize("cluster_fonts", [False, True])
+def test_chart_titles_do_not_overlap_or_run_off_the_figure(res, monkeypatch, cluster_fonts):
+    import matplotlib as mpl
+    from nyc311 import nytplot as nyt
+    if cluster_fonts:   # the cluster has none of the style's preferred fonts and falls back to wider DejaVu
+        use = nyt.use
+
+        def dejavu():
+            use()
+            mpl.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+            mpl.rcParams["font.serif"] = ["DejaVu Serif"]
+        monkeypatch.setattr(nyt, "use", dejavu)
+    with mpl.rc_context():
+        fig, texts = q9.figure(res)
+        fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    width = fig.bbox.width
+    boxes = {k: t.get_window_extent(r) for k, t in texts.items() if not hasattr(t, "get_text") or t.get_text()}
+    assert {"title", "subtitle", "note", "origin_key", "panel_a", "panel_b", "panel_c", "panel_d1",
+            "xlabel_a", "xlabel_b"} <= set(boxes)
+    for k, b in boxes.items():   # axis labels too: the tight bbox ignores their width, so past the edge = cropped
+        assert b.x0 >= 0 and b.x1 <= width, k
+    for kind in ["panel", "xlabel"]:
+        keys = [k for k in boxes if k.startswith(kind)]
+        for i, a in enumerate(keys):
+            for b in keys[i + 1:]:
+                assert not boxes[a].overlaps(boxes[b]), (a, b)
+    assert not boxes["subtitle"].overlaps(boxes["origin_key"])
+
+
 def test_outputs_written_and_numbers_computed(res, cleaned_cfg):
     out = cleaned_cfg.out_dir
     png = out / "figs" / "q09_equity.png"
     assert png.stat().st_size > 10_000
     w, h = _png_size(png)
-    assert 8 * 300 <= w <= 12.5 * 300 and h <= 1.4 * w     # one figure that fits a ~1000 px report column
+    assert 8 * 300 <= w <= 11.5 * 300 and h <= 1.4 * w     # 11 in wide: nothing runs past the figure's edge
     assert len(list((out / "figs").glob("q09_*.png"))) == 1
     assert (out / "agg" / "q09_districts.csv").is_file()
     md = (out / "answers" / "q09.md").read_text()

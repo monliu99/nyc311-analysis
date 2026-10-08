@@ -10,11 +10,15 @@ community districts. The exclusion waterfall is Q7's, so the totals are identica
   3. Origin: the city / people (private) / natural / other mix by district and by income fifth (Q3's taxonomy).
   4. Inequity: rank correlations (n, p, 95% CI) of median household income with the mix-adjusted time to close
      (Q4's method, imported from q04_response_times) and the mix-adjusted unresolved share, by district and by
-     PUMA (districts sharing one income value are pooled), plus income fifths and within-borough slopes. The
-     figure title is chosen by verdict() from the PUMA-level strength and significance and the within-borough CI.
+     PUMA (districts sharing one income value are pooled), plus income fifths and straight-line fits on
+     log2(income) without and with borough effects. The figure title comes from the evidence: verdict() grades the
+     PUMA-level rank correlation; when none is significant but a citywide straight-line fit is (income_tilt), the
+     title names that tilt and whether it holds within boroughs; otherwise it says there is no clear link.
 Population: Q7's rule (2010 Census for days before 2015, 2020 Census from 2015), as resident-years, so rates are
-per 1,000 residents a year. Per-resident numbers leave out Q7's commuter districts. Every number in text is
-computed here; the same code runs on one month or twelve years.
+per 1,000 residents a year. As in Q7, commuter districts are left out of per-resident rankings and of every
+comparison with income (income_districts); their PUMA partner stands alone. Unresolved complaints are also shown by
+year opened, with the year whose unresolved share stands out (peak_year). Every number in text is computed here; the
+same code runs on one month or twelve years.
 """
 from __future__ import annotations
 
@@ -46,6 +50,10 @@ INCOME_GROUPS = 5           # income fifths of PUMAs
 ALPHA = 0.05
 Z95 = 1.96
 WEAK, MODERATE = 0.3, 0.5   # a significant |rho| below WEAK is "weak", below MODERATE "moderate", else "strong"
+TILT_SIZE = {"weak": "Small", "moderate": "Moderate", "strong": "Clear"}   # title word for a tilt, by |rho| at its unit
+PEAK_RATIO = 2.0            # a year opened "stands out" when its unresolved share is at least this x the median year's
+MIN_PEAK_YEARS = 3          # years needed before one can be called an outlier
+TITLE_GAP_IN = 0.18         # inches kept free between a panel title and the next panel's title
 SPLIT = "case when special_area_cd is null then boro_cd end"   # district, NULL for parks/airports (as Q7)
 ORIGIN_LABEL = {"city": "city (infrastructure and services)", "private": "people (residents and businesses)",
                 "natural": "natural (weather, trees, animals)", "other": "other or mixed"}
@@ -174,6 +182,12 @@ def puma_units(d):
     return _rates(p.drop(columns=["_lr", "_w"]).reset_index())
 
 
+def income_districts(d):
+    """Districts compared with income (Q7's rule): commuter districts are left out entirely, so a PUMA they share
+    is represented by its residential partner alone."""
+    return d[~d.commuter.astype(bool)] if "commuter" in d else d
+
+
 def income_fifths(p, k=INCOME_GROUPS):
     """PUMAs in k income groups (ties broken by order); pooled metrics and origin shares per group."""
     p = p.dropna(subset=["median_hh_income"]).sort_values("median_hh_income").reset_index(drop=True)
@@ -231,9 +245,69 @@ def verdict(s, within=None):
     return {"sig": True, "strength": strength, "sign": sign, "fragile": bool(fragile)}
 
 
-def equity_title(t, u, t_within=None, u_within=None):
+def income_tilt(slopes, metric, corr=None, units=("PUMA", "district")):
+    """The first citywide straight-line fit ('all', income areas before districts) of metric on log2(income) with
+    p < ALPHA, with the same unit's within-borough fit and, from corr, its rank correlation; None if none is."""
+    for unit in units:
+        s = slopes[(slopes.unit == unit) & (slopes.metric == metric)].set_index("model")
+        if not {"all", "within borough"} <= set(s.index) or not s.loc["all", "p"] < ALPHA:
+            continue
+        a, w = s.loc["all"], s.loc["within borough"]
+        rho = np.nan
+        if corr is not None:
+            c = corr[(corr.unit == unit) & (corr.metric == metric)]
+            rho = float(c.rho.iloc[0]) if len(c) else np.nan
+        return {"unit": unit, "n": int(a.n), "per_doubling": float(a.per_doubling), "p": float(a.p),
+                "ci_low": float(a.ci_low), "ci_high": float(a.ci_high), "within": float(w.per_doubling),
+                "within_low": float(w.ci_low), "within_high": float(w.ci_high), "rho": rho}
+    return None
+
+
+def tilt_within(tilt):
+    """What the within-borough fit does to a citywide tilt: 'holds' or 'reverses' (its CI excludes 0),
+    'disappears' (CI spans 0 and the estimate is under half the citywide one) or 'is unclear'."""
+    lo, hi, w, b = tilt["within_low"], tilt["within_high"], tilt["within"], tilt["per_doubling"]
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return "is unclear"
+    if not lo <= 0 <= hi:
+        return "holds" if np.sign(w) == np.sign(b) else "reverses"
+    return "disappears" if abs(w) < abs(b) / 2 else "is unclear"
+
+
+def _unit_noun(unit):
+    return "districts" if unit == "district" else "areas"
+
+
+def _tilt_phrase(metric, tilt):
+    b = tilt["per_doubling"]
+    per = "halving" if b < 0 else "doubling"
+    if metric == "adj_pct":
+        return f"wait about {abs(b):.1f}% longer per {per} of income for the same complaints"
+    return f"have about {abs(b):.2f} points more of the same complaints left open per {per} of income"
+
+
+def _tilt_title(tilts):
+    """'Small citywide tilt: lower-income districts wait about 2.5% longer per halving of income for the same
+    complaints, a gap that disappears within boroughs' (size from the tilt's own rank correlation)."""
+    rhos = [abs(tl["rho"]) for _, tl in tilts if np.isfinite(tl.get("rho", np.nan))]
+    a = max(rhos) if rhos else np.nan
+    size = (TILT_SIZE["weak"] if a < WEAK else TILT_SIZE["moderate"] if a < MODERATE else TILT_SIZE["strong"]
+            ) if np.isfinite(a) else "A"
+    groups = {}
+    for m, tl in tilts:
+        who = f"{'lower' if tl['per_doubling'] < 0 else 'higher'}-income {_unit_noun(tl['unit'])}"
+        groups.setdefault(who, []).append(_tilt_phrase(m, tl))
+    body = "; ".join(f"{who} {' and '.join(ps)}" for who, ps in groups.items())
+    status = {tilt_within(tl) for _, tl in tilts}
+    tail = (f", a gap that {status.pop()} within boroughs" if len(status) == 1 else
+            " (not all of it holds within boroughs)")
+    return f"{size} citywide tilt: {body}{tail}"
+
+
+def equity_title(t, u, t_within=None, u_within=None, t_tilt=None, u_tilt=None):
     """Figure title from the evidence: t / u are rank correlations of income with the mix-adjusted time to close /
-    share left open (higher = worse service), t_within / u_within the within-borough slope CIs."""
+    share left open (higher = worse service) across income areas, t_within / u_within the within-borough slope CIs.
+    When neither correlation is significant, t_tilt / u_tilt (income_tilt) name a citywide straight-line tilt."""
     parts = []
     for s, w, worse in [(t, t_within, "wait longer for the same complaints"),
                         (u, u_within, "have more of the same complaints left open")]:
@@ -242,6 +316,9 @@ def equity_title(t, u, t_within=None, u_within=None):
             who = "lower-income" if v["sign"] < 0 else "higher-income"
             parts.append((v, f"{who} areas {worse}"))
     if not parts:
+        tilts = [(m, tl) for m, tl in [("adj_pct", t_tilt), ("excess_pts_mix", u_tilt)] if tl]
+        if tilts:
+            return _tilt_title(tilts)
         return ("No clear link between area income and how long the same complaints take to close or how many "
                 "stay open")
     rank = {"weak": 1, "moderate": 2, "strong": 3}
@@ -274,10 +351,60 @@ def _rho_short(s):
     return _minus(f"\N{GREEK SMALL LETTER RHO} {s['rho']:+.2f}") + f" (p {_p(s['p'])}{tag})"
 
 
-def equity_subtitle(t, u):
-    return (f"Rank correlation with median household income across {t.get('n', 0)} income areas: time to close "
+def _fit_short(metric, tl):
+    if metric == "adj_pct":
+        name, f = "time to close", (lambda v: f"{v:+.1f}%")
+    else:
+        name, f = "share left open", (lambda v: f"{v:+.2f} points")
+    return _minus(f"{name} {f(tl['per_doubling'])} per doubling of income (p {_p(tl['p'])}); within boroughs "
+                  f"{f(tl['within'])} (95% CI {tl['within_low']:+.1f} to {tl['within_high']:+.1f})")
+
+
+def equity_subtitle(t, u, t_tilt=None, u_tilt=None):
+    text = (f"Rank correlation with median household income across {t.get('n', 0)} income areas: time to close "
             f"{_rho_short(t)}; share left open {_rho_short(u)}. Both compare like with like (same complaint type "
             f"and year).")
+    for m, tl in [("adj_pct", t_tilt), ("excess_pts_mix", u_tilt)]:
+        if tl:
+            text += f" Straight-line fit across {tl['n']} {_unit_noun(tl['unit'])}: {_fit_short(m, tl)}."
+    return text
+
+
+def peak_year(yr, min_years=MIN_PEAK_YEARS):
+    """The year opened with the highest unresolved share: its count, share of all unresolved, rate vs the median
+    year's, the largest category among its unresolved, and whether it stands out (>= PEAK_RATIO x the median).
+    None with fewer than min_years years."""
+    y = yr[(yr.n > 0) & (yr.year >= 0)]
+    if len(y) < min_years:
+        return None
+    r = y.loc[y.pct_unresolved.idxmax()]
+    med = float(y.pct_unresolved.median())
+    tot = int(y.n_unresolved.sum())
+    ratio = float(r.pct_unresolved) / med if med > 0 else np.inf
+    cat = r.get("top_unresolved_category")
+    return {"year": int(r.year), "n_unresolved": int(r.n_unresolved), "total_unresolved": tot,
+            "share_pct": 100 * float(r.n_unresolved) / max(tot, 1), "pct": float(r.pct_unresolved),
+            "median_pct": med, "ratio": ratio, "n_years": len(y), "stands_out": bool(ratio >= PEAK_RATIO),
+            "category": cat if isinstance(cat, str) else None,
+            "category_pct": float(r.get("top_category_pct", np.nan))}
+
+
+def peak_year_sentence(pk):
+    """Plain-language sentence on peak_year(): an outlier year with its count, share and rate vs the median year,
+    and a hedge (the data record status, not why a record was never closed)."""
+    if pk is None:
+        return ""
+    if not pk["stands_out"]:
+        return (f"No year stands out: the highest unresolved share ({pk['year']}, {pk['pct']:.1f}%) is under "
+                f"{PEAK_RATIO:g} times the median year's {pk['median_pct']:.1f}% (of {pk['n_years']} years).")
+    cat = (f" The largest category among them is {pk['category']} ({pk['category_pct']:.0f}%)."
+           if pk["category"] and np.isfinite(pk["category_pct"]) else "")
+    return (f"**{pk['year']} stands out:** {pk['n_unresolved']:,} of the {pk['total_unresolved']:,} unresolved "
+            f"complaints ({pk['share_pct']:.0f}%) were opened that year, {pk['pct']:.1f}% of its complaints against "
+            f"{pk['median_pct']:.1f}% in the median year (of {pk['n_years']}), {pk['ratio']:.1f} times as high.{cat} "
+            "That more likely reflects records left open and never closed than a year of worse service, but the data "
+            "cannot show why. Comparing each district with the citywide share for the same year removes that year's "
+            "overall level, though not where its open records sit.")
 
 
 # ---------- data ----------
@@ -314,8 +441,17 @@ def unresolved_by(con, rel, group_col, d_final):
 
 
 def by_year(con):
-    return con.sql("""select yr as year, count(*)::bigint n, count_if(unresolved)::bigint n_unresolved,
-                      100 * avg(unresolved::int) pct_unresolved from q9 group by 1 order by 1""").df()
+    """Complaints and unresolved by year opened (59 districts), with the largest category among each year's
+    unresolved (ties broken by name)."""
+    return con.sql("""
+        with y as (select yr as year, count(*)::bigint n, count_if(unresolved)::bigint n_unresolved,
+                          100 * avg(unresolved::int) pct_unresolved from q9 group by 1),
+        c as (select yr as year, category, count(*)::bigint k,
+                     row_number() over (partition by yr order by count(*) desc, category) as rk
+              from q9 where unresolved group by yr, category)
+        select y.year, y.n, y.n_unresolved, y.pct_unresolved, c.category as top_unresolved_category,
+               100.0 * c.k / y.n_unresolved as top_category_pct
+        from y left join c on c.year = y.year and c.rk = 1 order by y.year""").df()
 
 
 def _wide(df, value, prefix):
@@ -401,7 +537,8 @@ def origin_city(con):
 
 
 def correlations(d, p):
-    """Spearman with income for every metric; per-resident metrics leave commuter districts out."""
+    """Spearman with income for every metric, by district (d) and by PUMA (p). The caller passes income_districts;
+    per-resident metrics also drop any commuter district left in d."""
     rows = []
     for unit, t in [("district", d), ("PUMA", p)]:
         for m in METRICS:
@@ -467,8 +604,9 @@ def _panel_unresolved(ax, d, nyt, col):
                   color=nyt.NOTE_GRAY, loc="left")
     if len(s):
         top = s.iloc[-1]
-        nyt.panel_title(ax, textwrap.fill(f"A. Most unresolved complaints: {top.short}, {int(top.n_unresolved):,}", 58),
-                        fontsize=11)
+        return nyt.panel_title(ax, f"A. Most unresolved complaints: {top.short}, {int(top.n_unresolved):,}",
+                               fontsize=11)
+    return None
 
 
 def _panel_concentration(ax, conc, nyt, col):
@@ -493,8 +631,9 @@ def _panel_concentration(ax, conc, nyt, col):
                   color=nyt.NOTE_GRAY, loc="left")
     if len(c):
         top = c.iloc[-1]
-        nyt.panel_title(ax, textwrap.fill(f"B. Most concentrated: {top.key}, {top.hoover_pct:.0f}% would have "
-                                          "to move", 48), fontsize=11)
+        return nyt.panel_title(ax, f"B. Most concentrated: {top.key}, {top.hoover_pct:.0f}% would have to move",
+                               fontsize=11)
+    return None
 
 
 def _panel_origin(ax, f, nyt, col, labels):
@@ -515,9 +654,9 @@ def _panel_origin(ax, f, nyt, col, labels):
     _hbar(ax)
     nyt.format_x(ax, suffix="%", step=25)
     lo, hi = f.pct_city.iloc[0], f.pct_city.iloc[-1]
-    nyt.panel_title(ax, textwrap.fill(f"C. Origin of complaints by area income: city {lo:.0f}% in the "
-                                      f"{labels[0].split(chr(10))[0].lower()}, {hi:.0f}% in the "
-                                      f"{labels[-1].split(chr(10))[0].lower()}", 52), fontsize=11)
+    first, last = (s.split("\n")[0].lower() for s in (labels[0], labels[-1]))
+    return nyt.panel_title(ax, f"C. City-origin share: {lo:.0f}% in the {first}, {hi:.0f}% in the {last}",
+                           fontsize=11)
 
 
 def _panel_measure(ax, f, m, title, fmt, suffix, xlabel, nyt):
@@ -544,11 +683,45 @@ def _panel_measure(ax, f, m, title, fmt, suffix, xlabel, nyt):
     ax.grid(axis="y", visible=False)
     ax.spines["bottom"].set_visible(False)
     nyt.format_x(ax, suffix=suffix, nbins=3)
-    nyt.panel_title(ax, title, fontsize=10.5)
     ax.set_xlabel(xlabel, fontsize=9, color=nyt.NOTE_GRAY, loc="left")
+    return nyt.panel_title(ax, title, fontsize=10.5)
+
+
+def fit_width(t, max_px, renderer):
+    """Keep Text t as it is if every line fits in max_px pixels; otherwise re-wrap its words greedily so that each
+    line does (a single word longer than max_px stays on its own line)."""
+    prop = t.get_fontproperties()
+
+    def width(s):
+        return renderer.get_text_width_height_descent(s, prop, ismath=False)[0]
+
+    text = t.get_text()
+    if all(width(line) <= max_px for line in text.split("\n")):
+        return t
+    lines, cur = [], ""
+    for word in text.split():
+        cand = f"{cur} {word}" if cur else word
+        if cur and width(cand) > max_px:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = cand
+    t.set_text("\n".join(lines + [cur]))
+    return t
 
 
 def chart(res, path):
+    from nyc311 import nytplot as nyt
+    fig, _ = figure(res)
+    return nyt.save(fig, path)
+
+
+def figure(res):
+    """The Q9 figure and its text objects by name (title, subtitle, note, origin_key, panel_a ... panel_d3). Every
+    title, the subtitle and the note are wrapped to the space they have once the layout is known, so none runs into
+    a neighbor or past the figure's edge, whatever the computed text."""
+    import matplotlib as mpl
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
     from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
 
@@ -558,6 +731,10 @@ def chart(res, path):
     f, facts, d = res["fifths"], res["facts"], res["districts"]
     col = _colors()
     fig = Figure(figsize=(11, 12.2))
+    FigureCanvasAgg(fig)
+    rend = fig.canvas.get_renderer()
+    pad = mpl.rcParams["figure.constrained_layout.w_pad"] * fig.dpi
+    full = fig.bbox.width - 2 * pad
     outer = fig.add_gridspec(3, 1, height_ratios=[0.5, 5.0, 3.5])
     key = fig.add_subplot(outer[0])
     top = outer[1].subgridspec(1, 2, width_ratios=[1.05, 1])
@@ -569,8 +746,9 @@ def chart(res, path):
     key.axis("off")
     key.set_xlim(0, 1)
     key.set_ylim(0, 1)
-    key.text(0, 0.98, textwrap.fill(facts["subtitle"], 135), va="top", fontsize=10, color="#333333",
-             fontfamily=nyt.SANS)
+    sub = fit_width(key.text(0, 0.98, facts["subtitle"], va="top", fontsize=10, color="#333333",
+                             fontfamily=nyt.SANS), full, rend)
+    outer.set_height_ratios([0.25 + 0.14 * (sub.get_text().count("\n") + 1), 5.0, 3.5])   # room for the key row
     oc = res["origin_city"].set_index("origin")
     parts = [TextArea(f"Complaint origin (colors in A\N{EN DASH}C), share of complaints across the {len(d)} "
                       "districts:", textprops={"fontsize": 10, "color": nyt.NOTE_GRAY, "fontfamily": nyt.SANS})]
@@ -578,33 +756,49 @@ def chart(res, path):
         c = "#8c8c8c" if o == "other" else col[o]
         parts.append(TextArea(f"{ORIGIN_SHORT[o]} {oc.loc[o, 'pct']:.0f}%", textprops={
             "fontsize": 10.5, "fontweight": "bold", "color": c, "fontfamily": nyt.SANS}))
-    key.add_artist(AnchoredOffsetbox(loc="lower left", child=HPacker(children=parts, align="baseline", pad=0, sep=12),
-                                     pad=0, borderpad=0, frameon=False, bbox_to_anchor=(0, 0.0),
-                                     bbox_transform=key.transAxes))
+    origin_key = AnchoredOffsetbox(loc="lower left", child=HPacker(children=parts, align="baseline", pad=0, sep=12),
+                                   pad=0, borderpad=0, frameon=False, bbox_to_anchor=(0, 0.0),
+                                   bbox_transform=key.transAxes)
+    key.add_artist(origin_key)
 
-    _panel_unresolved(ax_a, d, nyt, col)
-    _panel_concentration(ax_b, res["concentration_categories"], nyt, col)
+    texts = {"subtitle": sub, "origin_key": origin_key,
+             "panel_a": _panel_unresolved(ax_a, d, nyt, col),
+             "panel_b": _panel_concentration(ax_b, res["concentration_categories"], nyt, col)}
     if len(f):
         labels = [f"{n}\n{_money(r.income_min)}\N{EN DASH}{_money(r.income_max)}"
                   for n, r in zip(fifth_names(len(f)), f.itertuples())]
-        _panel_origin(ax_c, f, nyt, col, labels)
+        texts["panel_c"] = _panel_origin(ax_c, f, nyt, col, labels)
         t, u = facts["t"], facts["u"]
-        comm = ", ".join(_code(c) for c in d.boro_cd[d.commuter])
-        for ax, m, title, fmt, suffix, xl in [
+        r_unres = _corr(res, "PUMA", "unresolved_per_1k_yr")
+        for i, (ax, m, title, fmt, suffix, xl) in enumerate([
                 (ax_d[0], "adj_pct", "D. Time to close\nvs typical", lambda v: f"{v:+.1f}%", "%", _rho_short(t)),
                 (ax_d[1], "excess_pts_mix", "Left open vs\nexpected (points)", lambda v: f"{v:+.2f}", "",
                  _rho_short(u)),
-                (ax_d[2], "unresolved_per_1k_yr", "Unresolved per\n1,000 a year", _num, "",
-                 f"{comm} left out" if comm else "")]:
-            _panel_measure(ax, f, m, title, fmt, suffix, textwrap.fill(xl, 24), nyt)
+                (ax_d[2], "unresolved_per_1k_yr", "Unresolved per\n1,000 a year", _num, "", _rho_short(r_unres))],
+                start=1):
+            texts[f"panel_d{i}"] = _panel_measure(ax, f, m, title, fmt, suffix, textwrap.fill(xl, 24), nyt)
     else:
         for ax in [ax_c, *ax_d]:
             ax.axis("off")
         ax_c.text(0, 0.5, "Too few districts with enough complaints to compare income groups", fontsize=10,
                   color=nyt.NOTE_GRAY, transform=ax_c.transAxes)
-    nyt.title(fig, textwrap.fill(facts["title"], 92))
-    nyt.note(fig, textwrap.fill(facts["note"], 170))
-    return nyt.save(fig, path)
+    texts["title"] = fit_width(nyt.title(fig, facts["title"]), full, rend)
+    texts["note"] = fit_width(nyt.note(fig, facts["note"]), full, rend)
+
+    # panel titles and x-axis labels (both start at their axes' left edge): once constrained layout has placed the
+    # axes, each may run up to the next panel in its row or to the figure's right margin. Axis labels need it too:
+    # the tight bounding box leaves their width out, so a label past the edge would be cropped, not shown.
+    fig.canvas.draw()
+    gap = TITLE_GAP_IN * fig.dpi
+    right = fig.bbox.width - pad
+    for row in [[("a", ax_a), ("b", ax_b)], [("c", ax_c), *[(f"d{i}", ax) for i, ax in enumerate(ax_d, start=1)]]]:
+        for (name, ax), nxt in zip(row, [*row[1:], None]):
+            limit = (nxt[1].bbox.x0 - gap if nxt else right) - ax.bbox.x0
+            if texts.get(f"panel_{name}") is not None:
+                fit_width(texts[f"panel_{name}"], limit, rend)
+            if ax.get_xlabel():
+                texts[f"xlabel_{name}"] = fit_width(ax.xaxis.label, limit, rend)
+    return fig, {k: v for k, v in texts.items() if v is not None}
 
 
 # ---------- run ----------
@@ -627,16 +821,19 @@ def run(cfg):
     d_final = d1 - pd.Timedelta(days=FINAL_DAYS - 1)
     d, u_all = district_table(con, demo, py, len(days) / DAYS_PER_YEAR, d_final, names)
     ok = d[~d.low_n]
+    inc = income_districts(ok)                       # every comparison with income leaves commuter districts out
     lq_c, lq_t, conc_c, conc_t = lq_tables(con, set(ok.boro_cd))
-    p = puma_units(ok)
+    p = puma_units(inc)
+    yr = by_year(con)
     res = {
         "exclusions": ex, "n_benchmark": n_benchmark, "districts": d, "unresolved_all_groups": u_all,
-        "by_year": by_year(con), "lq_categories": lq_c, "lq_types": lq_t, "concentration_categories": conc_c,
+        "by_year": yr, "peak_year": peak_year(yr), "lq_categories": lq_c, "lq_types": lq_t,
+        "concentration_categories": conc_c,
         "concentration_types": conc_t, "origin": d[["boro_cd", "label", *[f"pct_{o}" for o in ORIGINS],
                                                      "dominant_origin"]],
-        "origin_city": origin_city(con), "pumas": p, "correlations": correlations(ok, p),
-        "fifths": income_fifths(p),
-        "slopes": pd.concat([income_slopes(ok, unit="district"), income_slopes(p, unit="PUMA")], ignore_index=True),
+        "origin_city": origin_city(con), "pumas": p, "correlations": correlations(inc, p),
+        "fifths": income_fifths(p), "n_income_districts": len(inc),
+        "slopes": pd.concat([income_slopes(inc, unit="district"), income_slopes(p, unit="PUMA")], ignore_index=True),
         "period": period_label(d0.date(), d1.date()), "period_long": period_long(d0.date(), d1.date()),
         "days": days, "n_days": len(days), "n_2010": n_2010, "n_2020": n_2020, "d_final": d_final,
         "n_shared_pairs": int((demo.puma_shared_with.notna() & (demo.boro_cd < pd.to_numeric(
@@ -700,16 +897,28 @@ def _within(res, metric, unit="PUMA"):
 def _facts(res):
     d = res["districts"]
     t, u = _corr(res, "PUMA", "adj_pct"), _corr(res, "PUMA", "excess_pts_mix")
-    title = equity_title(t, u, _within(res, "adj_pct"), _within(res, "excess_pts_mix"))
+    t_tilt = income_tilt(res["slopes"], "adj_pct", res["correlations"])
+    u_tilt = income_tilt(res["slopes"], "excess_pts_mix", res["correlations"])
+    title = equity_title(t, u, _within(res, "adj_pct"), _within(res, "excess_pts_mix"), t_tilt=t_tilt, u_tilt=u_tilt)
     n = int(d.n.sum())
     comm = ", ".join(_code(c) for c in d.boro_cd[d.commuter])
     note = (f"Note: {n:,} complaints on {res['n_days']:,} complete days, {res['period']}, {len(d)} community "
             f"districts. Income: ACS 2010{chr(8211)}2014 median household income of {len(res['pumas'])} PUMAs, 2014 "
             f"dollars. D compares with the citywide figure for the same complaint type and year. Residents: 2010 "
             f"Census before {q7.POP_2020_FROM_YEAR}, 2020 Census from {q7.POP_2020_FROM_YEAR}"
-            + (f"; {comm} ({q7.COMMUTER_LABEL}) left out." if comm else "."))
-    return {"title": title, "subtitle": equity_subtitle(t, u), "note": note, "t": t, "u": u,
+            + (f". {comm} ({q7.COMMUTER_LABEL}) is left out of C, D and every comparison with income." if comm
+               else "."))
+    return {"title": title, "subtitle": equity_subtitle(t, u, t_tilt, u_tilt), "note": note, "t": t, "u": u,
+            "t_tilt": t_tilt, "u_tilt": u_tilt,
             "verdict_t": verdict(t, _within(res, "adj_pct")), "verdict_u": verdict(u, _within(res, "excess_pts_mix"))}
+
+
+def _peak_report(pk):
+    if pk is None:
+        return f"not assessed (fewer than {MIN_PEAK_YEARS} years)"
+    return (f"{pk['year']}, {pk['n_unresolved']:,} unresolved ({pk['share_pct']:.1f}% of all), {pk['pct']:.2f}% of "
+            f"its complaints vs {pk['median_pct']:.2f}% in the median year ({pk['ratio']:.1f}x; "
+            f"{'stands out' if pk['stands_out'] else 'does not stand out'})")
 
 
 def _report(cfg, res):
@@ -721,15 +930,22 @@ def _report(cfg, res):
             f"population (Q7 rule): 2010 Census for {res['n_2010']:,} days before {q7.POP_2020_FROM_YEAR}, 2020 Census "
             f"for {res['n_2020']:,} days from {q7.POP_2020_FROM_YEAR}; per-resident rates are per 1,000 a year",
             f"districts ranked (>= {MIN_N} complaints): {len(ok)} of {len(d)}; {q7.COMMUTER_LABEL}s (left out of "
-            f"per-resident numbers): {', '.join(d.short[d.commuter]) or 'none'}",
+            f"per-resident numbers and every comparison with income, {res['n_income_districts']} districts left): "
+            f"{', '.join(d.short[d.commuter]) or 'none'}",
             f"unresolved opened in the final {FINAL_DAYS} complete days (from {res['d_final']:%Y-%m-%d}): "
             f"{int(d.n_unresolved_final.sum()):,} of {int(d.n_unresolved.sum()):,}",
+            "peak year opened: " + _peak_report(res["peak_year"]),
             f"title: {f['title']}", f"subtitle: {f['subtitle']}",
-            "verdicts (PUMA): " + "; ".join(
+            "verdicts (PUMA rank correlation): " + "; ".join(
                 f"{name} {v['strength']}" + (", fades within boroughs" if v["fragile"] else "")
-                for name, v in [("time to close", f["verdict_t"]), ("left open", f["verdict_u"])]))
+                for name, v in [("time to close", f["verdict_t"]), ("left open", f["verdict_u"])]),
+            f"citywide tilt (first straight-line fit with p < {ALPHA}, income areas then districts): " + "; ".join(
+                f"{name} across {tl['n']} {_unit_noun(tl['unit'])} {tl['per_doubling']:+.2f} per doubling "
+                f"(p {tl['p']:.3f}), within boroughs {tl['within']:+.2f} ({tl['within_low']:+.2f} to "
+                f"{tl['within_high']:+.2f}): {tilt_within(tl)}" if tl else f"{name} none"
+                for name, tl in [("time to close", f["t_tilt"]), ("left open", f["u_tilt"])]))
     rep.table(ex.round(2), title="Rows (default set -> analyzed; identical to Q7)")
-    rep.table(res["by_year"].round(2), max_rows=14, title="Unresolved by year opened (59 districts)")
+    rep.table(res["by_year"].round(2), max_rows=14, title=f"Unresolved by year opened ({len(d)} districts)")
     cols = ["boro_cd", "short", "n", "n_unresolved", "pct_unresolved", "unresolved_per_1k_yr", "expected_pct_year",
             "expected_pct_mix", "excess_pts_mix", "z_mix", "adj_pct", "median_hh_income"]
     rep.table(ok.sort_values("n_unresolved", ascending=False)[cols].round(2), max_rows=10,
@@ -749,7 +965,7 @@ def _report(cfg, res):
     oc = [f"pct_{o}" for o in ORIGINS]
     rep.table(ok[oc].describe().loc[["min", "50%", "max"]].round(1).reset_index(), title="Origin shares across districts")
     rep.table(res["correlations"].drop(columns="label").round(3), title="Spearman with median household income")
-    rep.table(res["fifths"].round(2), title="Income fifths of PUMAs (pooled; per resident without commuter districts)")
+    rep.table(res["fifths"].round(2), title="Income fifths of PUMAs (pooled; commuter districts left out, as in Q7)")
     rep.table(res["slopes"].round(3), title="OLS on log2(income), HC1: change per doubling of income")
     rep.emit()
 
@@ -813,6 +1029,10 @@ def _write_answer(cfg, res):
     lab = dict(zip(d.boro_cd, d.label))
     comm = d[d.commuter]
     comm_note = f"; {', '.join(comm.label)} left out" if len(comm) else ""
+    inc_set = set(int(b) for s in res["pumas"].districts for b in str(s).split(", "))
+    partners = d[d.puma_2010.isin(set(comm.puma_2010)) & ~d.commuter & d.boro_cd.isin(inc_set)]
+    p = res["pumas"]
+    n_pooled = int((p.n_districts > 1).sum())
 
     def dname(b):
         return lab.get(int(b), str(b))
@@ -825,38 +1045,61 @@ def _write_answer(cfg, res):
         return (f"{r.key} (Hoover {r.hoover_pct:.0f}%; {r.n_districts_high} districts at LQ {LQ_HIGH:g}+"
                 + (f": {hi}{more}" if hi else "") + f"{top})")
 
-    def slope_line(m, unit, level):
+    def slope_line(m, level):
         s = sl[(sl.metric == m) & (sl.unit == level)].set_index("model")
-        if s.empty:
+        if s.empty or not {"all", "within borough"} <= set(s.index):
             return "not estimable"
         a, w = s.loc["all"], s.loc["within borough"]
-        return _minus(f"{a.per_doubling:+.1f} {unit} per doubling of income (95% CI {a.ci_low:+.1f} to "
-                      f"{a.ci_high:+.1f}); within boroughs {w.per_doubling:+.1f} ({w.ci_low:+.1f} to {w.ci_high:+.1f})")
+        k = 1 if m == "adj_pct" else 2
+
+        def f_(v):   # no "-0.0": round first, then add 0.0 to turn -0.0 into 0.0
+            return f"{round(float(v), k) + 0.0:+.{k}f}"
+        unit = "%" if m == "adj_pct" else " points"
+        return _minus(f"{f_(a.per_doubling)}{unit} per doubling of income (95% CI {f_(a.ci_low)} to "
+                      f"{f_(a.ci_high)}, p {_p(a.p)}); within boroughs {f_(w.per_doubling)} ({f_(w.ci_low)} to "
+                      f"{f_(w.ci_high)})")
+
+    # every citywide income test of the two service measures, so one pass is read against how many were run
+    tests = []
+    for m, what in [("adj_pct", "time to close"), ("excess_pts_mix", "share left open")]:
+        for level, where in [("PUMA", "income areas"), ("district", "districts")]:
+            tests.append((f"{what}, rank correlation across {where}", _corr(res, level, m)["p"]))
+            s = sl[(sl.metric == m) & (sl.unit == level) & (sl.model == "all")]
+            if len(s):
+                tests.append((f"{what}, straight-line fit across {where}", float(s.p.iloc[0])))
+    tests = [(name, pv) for name, pv in tests if np.isfinite(pv)]
+    passed = [(name, pv) for name, pv in tests if pv < ALPHA]
+    tests_line = (f"- **How much weight one test can bear.** {len(passed)} of the {len(tests)} citywide income tests of "
+                  "the two service measures (rank correlation and straight-line fit, across income areas and across "
+                  f"districts) {'has' if len(passed) == 1 else 'have'} p < {ALPHA:g}"
+                  + (": " + "; ".join(f"{name} (p {_p(pv)})" for name, pv in passed) if passed else "")
+                  + f". If income and service were unrelated, about {len(tests) * ALPHA:.1f} of {len(tests)} would "
+                  "pass by chance; the tests share the same data, so passes do not add up as independent evidence.")
 
     if len(fif) >= 2:
         q_lo, q_hi = fif.iloc[0], fif.iloc[-1]
         fifth_line = (f"- **Income fifths** ({len(res['pumas'])} PUMAs in {len(fif)} groups, poorest "
                       f"${q_lo.income_min / 1000:,.0f}k-${q_lo.income_max / 1000:,.0f}k, richest "
-                      f"${q_hi.income_min / 1000:,.0f}k-${q_hi.income_max / 1000:,.0f}k). Time to close vs typical for "
+                      f"${q_hi.income_min / 1000:,.0f}k-${q_hi.income_max / 1000:,.0f}k{comm_note}). Time to close vs "
+                      "typical for "
                       f"the same complaints: {_series(fif, 'adj_pct', lambda v: _minus(f'{v:+.1f}%') if np.isfinite(v) else 'n/a')}"
                       f". Left open beyond the complaint mix: "
                       f"{_series(fif, 'excess_pts_mix', lambda v: _minus(f'{v:+.2f}'))} points. Unresolved per 1,000 "
-                      f"residents a year: {_series(fif, 'unresolved_per_1k_yr', _num, comm_note)}. "
+                      f"residents a year: {_series(fif, 'unresolved_per_1k_yr', _num)}. "
                       + ("The time-to-close series rises and falls rather than stepping steadily with income."
                          if not (fif.adj_pct.is_monotonic_increasing or fif.adj_pct.is_monotonic_decreasing)
                          else "The time-to-close series moves steadily with income."))
     else:
         fifth_line = "- **Income fifths** could not be compared (too few districts with enough complaints)."
 
-    years_line = ""
-    if len(yr) >= 2:
-        old, new = yr.iloc[0], yr.iloc[-1]
-        years_line = (f" By year opened, {int(old.year)} is {old.pct_unresolved:.1f}% unresolved and {int(new.year)} "
-                      f"{new.pct_unresolved:.1f}%.")
+    years_line = ("- **By year opened** (share of complaints still unresolved): "
+                  + ", ".join(f"{int(r.year)} {r.pct_unresolved:.1f}%" for r in yr.itertuples()) + "."
+                  + (f" {peak_year_sentence(res['peak_year'])}" if res.get("peak_year") else
+                     f" Too few years ({len(yr)}) to say whether one stands out."))
     final_line = (f"- **Recent complaints.** {n_final:,} of the {tot_unres:,} unresolved complaints "
                   f"({100 * n_final / max(tot_unres, 1):.0f}%) were opened in the final {FINAL_DAYS} complete days "
                   f"(from {res['d_final']:%b %d, %Y}). Those had the least time to close, so every comparison below is "
-                  "against the citywide share for the same year." + years_line)
+                  "against the citywide share for the same year.")
     if short:
         final_line += (f" **The data cover only {res['n_days']} days, so all of it counts as 'final months' and "
                        "the age adjustment cannot separate old from new backlog here.** Status is as of the data "
@@ -884,8 +1127,11 @@ def _write_answer(cfg, res):
         f"- **Per 1,000 residents a year** divides by resident-years, Q7's rule: 2010 Census for "
         f"{res['n_2010']:,} days before {q7.POP_2020_FROM_YEAR}, 2020 Census for {res['n_2020']:,} days from "
         f"{q7.POP_2020_FROM_YEAR}."
-        + (f" {', '.join(comm.label)} is a {q7.COMMUTER_LABEL} (few residents, many workers), so it is left out of "
-           "per-resident rankings, correlations and income fifths." if len(comm) else ""),
+        + (f" {', '.join(comm.label)} is a {q7.COMMUTER_LABEL} (few residents, many workers), so, as in Q7, it is "
+           "left out of per-resident rankings and of every comparison with income (correlations, straight-line fits, "
+           "income fifths)"
+           + (f"; {', '.join(partners.label)}, which shares its income area (PUMA), stands alone there"
+              if len(partners) else "") + "." if len(comm) else ""),
         f"- **Time to close** is Q4's mix-adjusted measure: each closed complaint vs the citywide geometric mean for "
         f"the same complaint type and year, averaged per district (instant closures left out; districts need "
         f"{MIN_N_CLOSED} closures).",
@@ -908,6 +1154,7 @@ def _write_answer(cfg, res):
         + f". {len(sig_over)} districts are above expectation and {len(sig_under)} below by more than 1.96 binomial "
         f"standard errors (which ignore clustering, so treat these as screens, not tests).",
         final_line,
+        years_line,
         "",
         "## Are complaint types concentrated in specific areas?",
         "",
@@ -938,11 +1185,14 @@ def _write_answer(cfg, res):
         "## Patterns that suggest inequitable service",
         "",
         f"- **Headline (from the numbers below):** {f['title']}.",
-        f"- **Time to close vs income:** {_rho(t)} across income areas (PUMAs; the {res['n_shared_pairs']} district "
-        f"pairs that share one income value pooled); {_rho(td)} across districts, which counts those pairs twice. "
-        f"Linear fit across income areas: {slope_line('adj_pct', 'points', 'PUMA')}.",
+        f"- **Time to close vs income:** {_rho(t)} across {len(p)} income areas (PUMAs; {n_pooled} pairs of districts "
+        f"that share one income value pooled); {_rho(td)} across {res['n_income_districts']} districts, which counts "
+        f"those pairs twice. Straight-line fit across income areas: {slope_line('adj_pct', 'PUMA')}; across "
+        f"districts: {slope_line('adj_pct', 'district')}.",
         f"- **Still open beyond the complaint mix vs income:** {_rho(u)} across income areas; {_rho(ud)} across "
-        f"districts; {slope_line('excess_pts_mix', 'points', 'PUMA')}.",
+        f"districts. Straight-line fit across income areas: {slope_line('excess_pts_mix', 'PUMA')}; across "
+        f"districts: {slope_line('excess_pts_mix', 'district')}.",
+        tests_line,
         like_line,
         both_line,
         fifth_line,
@@ -955,7 +1205,8 @@ def _write_answer(cfg, res):
         "origin, with the count and the rate per 1,000 residents a year. B: how concentrated each main category is "
         "(Hoover index), colored by its main origin, with the district where it is most over-represented. C: the "
         "origin mix by income fifth. D: by the same fifths, time to close and the share left open, both against the "
-        "citywide figure for the same complaint type and year, and unresolved complaints per 1,000 residents a year.",
+        "citywide figure for the same complaint type and year, and unresolved complaints per 1,000 residents a year."
+        + (f" C and D leave out {', '.join(comm.label)}." if len(comm) else ""),
         "",
         "## Limits and what it would take to test causes",
         "",
