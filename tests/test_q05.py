@@ -87,7 +87,12 @@ def test_period_ignores_backfilled_rows(res, cleaned_cfg):
 
 
 def _toy_clean(rows, invalid=0, flagged=()):
-    df = pd.DataFrame(rows, columns=["created", "canonical_type", "agency", "is_info_request"])
+    """Rows are (created, canonical_type, agency, is_info_request[, raw complaint_type, descriptor]); without the
+    last two, the raw type is the canonical one and the descriptor is missing."""
+    rows = [tuple(r) + (r[1], None) if len(r) == 4 else tuple(r) for r in rows]
+    df = pd.DataFrame(rows, columns=["created", "canonical_type", "agency", "is_info_request", "complaint_type",
+                                     "descriptor"])
+    df["descriptor"] = df.descriptor.astype("string")
     df["created"] = pd.to_datetime(df.created)
     df["category"] = "c"
     for c in ["is_test", "dup_key", "out_of_file_order", "possibly_incomplete_day"]:
@@ -231,3 +236,123 @@ def test_outputs_and_findings(res, cleaned_cfg):
     assert re.search(r"!\[[^\]]+\]\(figs/q05_top10\.png\)", text)
     assert not re.search(r"<[a-zA-Z/][^>]*>", text)
     assert not re.search(r"\bnan\b|\bNone\b", text)
+
+
+# ---------- like-for-like check: descriptors moved to another type by an agency recoding ----------
+
+def test_name_key_reads_plural_and_separator_variants_as_one_name():
+    assert q5.name_key("WATER-LEAKS") == q5.name_key("WATER LEAK") == "water leak"
+    assert q5.name_key("JANITOR/SUPER") == q5.name_key("JANITOR-SUPER")
+    assert q5.name_key(None) == "" and q5.name_key(float("nan")) == ""
+
+
+def _rel_rows():
+    """2016-2020 in full and part of 2021 (HPD and DOT rows; raw type and descriptor given).
+    - Plumbing: BASIN 30 a year; WATER-LEAKS 40 in 2016 and 10 up to 2017-03-10, then the new raw type WATER LEAK
+      (canonical Water Leak) from 2017-03-11: a descriptor that became its own type.
+    - General MOLD (20 in 2016, last 2017-03-03) continues as Unsanitary MOLD from 2017-03-11: it joined a top type.
+    - Street CAVE-IN stops 2016-06-01 and a 'Cave In' type starts 2016-09-01: too late to be the same thing.
+    - Paint drops for real (60 -> 25); Noise grows (50 -> 80)."""
+    r = []
+    add = lambda d, canon, ag, raw, desc, k: r.extend([(d, canon, ag, False, raw, desc)] * k)  # noqa: E731
+    for y in range(2016, 2021):
+        add(f"{y}-06-15", "Plumbing", "HPD", "PLUMBING", "BASIN", 30)
+        add(f"{y}-06-15", "Unsanitary", "HPD", "UNSANITARY CONDITION", "PESTS", 30)
+        add(f"{y}-06-15", "Street", "DOT", "Street Condition", "POTHOLE", 50)
+        add(f"{y}-06-15", "Paint", "HPD", "PAINT/PLASTER", "WALL", {2016: 60, 2017: 50, 2018: 40}.get(y, 25))
+        add(f"{y}-06-15", "Noise", "NYPD", "Noise", "Loud Music", {2016: 50, 2017: 60, 2018: 70}.get(y, 80))
+        if y >= 2018:
+            add(f"{y}-06-15", "Water Leak", "HPD", "WATER LEAK", "SLOW LEAK", 40)
+            add(f"{y}-06-15", "Unsanitary", "HPD", "UNSANITARY CONDITION", "MOLD", 20)
+        if y >= 2017:
+            add(f"{y}-06-15", "Cave In", "DOT", "Cave In", "Cave-In", 10)
+    add("2016-06-15", "Plumbing", "HPD", "PLUMBING", "WATER-LEAKS", 40)
+    add("2017-03-10", "Plumbing", "HPD", "PLUMBING", "WATER-LEAKS", 10)
+    add("2017-03-11", "Water Leak", "HPD", "WATER LEAK", "HEAVY FLOW", 30)
+    add("2016-06-15", "General", "HPD", "GENERAL CONSTRUCTION", "MOLD", 20)
+    add("2017-03-03", "General", "HPD", "GENERAL CONSTRUCTION", "MOLD", 5)
+    add("2017-03-11", "Unsanitary", "HPD", "UNSANITARY CONDITION", "MOLD", 15)
+    add("2016-06-01", "Street", "DOT", "Street Condition", "CAVE-IN", 10)
+    add("2016-09-01", "Cave In", "DOT", "Cave In", "Cave-In", 10)
+    add("2016-01-01", "Noise", "NYPD", "Noise", "Loud Music", 1)
+    add("2020-12-31", "Noise", "NYPD", "Noise", "Loud Music", 1)
+    add("2021-03-01", "Noise", "NYPD", "Noise", "Loud Music", 1)
+    return r
+
+
+@pytest.fixture(scope="module")
+def relabeled(tmp_path_factory):
+    root = tmp_path_factory.mktemp("q5relabel")
+    work = root / "work"
+    work.mkdir()
+    _toy_clean(_rel_rows()).to_parquet(work / "clean.parquet")
+    cfg = Config.from_args(["--out", str(root / "out"), "--work", str(work), "--threads", "2"])
+    return cfg, q5.run(cfg)
+
+
+def test_relabelings_link_a_stopped_descriptor_to_a_same_name_successor_that_starts_at_once(relabeled):
+    cfg, r = relabeled
+    mv = r["relabelings"]
+    pairs = {(m.old_type, m.old_descriptor, m.new_type, m.via) for m in mv.itertuples()}
+    assert ("Plumbing", "WATER-LEAKS", "Water Leak", "type") in pairs
+    assert ("General", "MOLD", "Unsanitary", "descriptor") in pairs
+    assert not any(m.old_type == "Street" for m in mv.itertuples())  # successor started 92 days later
+    p = mv[mv.old_descriptor == "WATER-LEAKS"].iloc[0]
+    assert p.n_old == 50 and str(p.last_old)[:10] == "2017-03-10" and str(p.first_new)[:10] == "2017-03-11"
+    assert p.weight == pytest.approx(1.0)
+
+
+def test_relabelings_respect_the_window():
+    c = pd.DataFrame([("A", "OLD", "T1", "THING", 100, "2015-01-01", "2016-05-01"),
+                      ("A", "OLD", "T1", "KEEP", 100, "2015-01-01", "2017-12-31"),
+                      ("A", "THING", "T2", "X", 80, f"2016-05-{1 + q5.MOVE_WINDOW_DAYS:02d}", "2017-12-31"),
+                      ("A", "OTHER", "T3", "THING", 80, f"2016-05-{2 + q5.MOVE_WINDOW_DAYS:02d}", "2017-12-31"),
+                      ("B", "THING", "T4", "X", 80, "2016-05-02", "2017-12-31")],
+                     columns=["agency", "complaint_type", "canonical_type", "descriptor", "n", "first", "last"])
+    for col in ["first", "last"]:
+        c[col] = pd.to_datetime(c[col])
+    mv = q5.relabelings(c, pd.Timestamp("2015-01-01"), pd.Timestamp("2017-12-31"))
+    assert list(mv.new_type) == ["T2"]  # T3 starts one day too late; T4 belongs to another agency
+
+
+def test_like_for_like_counts_moved_descriptors_under_their_first_year_type(relabeled):
+    cfg, r = relabeled
+    assert r["years"] == (2016, 2019) and r["later_year"] == 2020
+    t = r["totals"]
+    ll = r["like_for_like"]
+    ll = ll[(ll.year_a == 2016) & (ll.year_b == 2019)].set_index("canonical_type")
+    assert ll.loc["Plumbing", "pct_b_same_labels"] == pytest.approx(100 * (30 + 40) / t[2019])
+    assert ll.loc["Water Leak", "pct_b_same_labels"] == pytest.approx(0)
+    assert ll.loc["Unsanitary", "pct_b_same_labels"] == pytest.approx(100 * 30 / t[2019])
+    assert ll.loc["Paint", "pct_b_same_labels"] == pytest.approx(ll.loc["Paint", "pct_b"])
+    assert ll.loc["Plumbing", "relabeled"] and not ll.loc["Paint", "relabeled"]
+    assert ll.loc["Plumbing", "pct_a"] == pytest.approx(100 * 70 / t[2016])  # BASIN + WATER-LEAKS
+    ch = r["change"].set_index("canonical_type")
+    assert ch.change_pts.idxmin() == "Plumbing"
+    assert ll.change_same_labels_pts.idxmin() == "Paint"
+    assert (cfg.out_dir / "agg" / "q05_like_for_like.csv").exists()
+    assert (cfg.out_dir / "agg" / "q05_relabelings.csv").exists()
+
+
+def test_findings_do_not_overstate_a_drop_that_is_partly_a_relabeling(relabeled):
+    cfg, r = relabeled
+    text = (cfg.out_dir / "answers" / "q05.md").read_text()
+    line = next(x for x in text.splitlines() if x.startswith("- **Like-for-like check"))
+    assert "PLUMBING 'WATER-LEAKS'" in line and "WATER LEAK" in line
+    assert "2017-03-10" in line and "2017-03-11" in line and "50 complaints" in line
+    assert "GENERAL CONSTRUCTION 'MOLD'" in line
+    t = r["totals"]
+    assert f"{100 * 70 / t[2016]:.1f}% to {100 * 70 / t[2019]:.1f}%" in line
+    assert "the biggest drop is Paint" in line and "the biggest gain is Noise" in line
+    assert "Cave" not in line
+    assert not re.search(r"\bnan\b|\bNone\b", text)
+    block = (cfg.out_dir / "reports" / "q05_top_types.txt").read_text()
+    assert "like for like" in block.lower()
+
+
+def test_no_relabeling_found_is_said_plainly(four_years):
+    cfg, r = four_years
+    assert r["relabelings"].empty
+    text = (cfg.out_dir / "answers" / "q05.md").read_text()
+    line = next(x for x in text.splitlines() if x.startswith("- **Like-for-like check"))
+    assert "No top type" in line

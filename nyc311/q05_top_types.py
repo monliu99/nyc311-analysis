@@ -5,16 +5,20 @@ not is_test, not dup_key, not is_info_request, not taxonomy category "Invalid en
 When the data hold at least two full calendar years (clean.full_years), a second chart compares the first full year
 with the last full year up to rules.PROFILE_LAST_YEAR (2011 vs 2019 on the full data) and shows the last full year
 after it (2020) as a lighter third marker, so the pandemic shift is visible without driving the comparison.
+A like-for-like check guards the change findings against relabeling: when an agency recoding moved a descriptor
+from one type to another between the compared years (HPD's PLUMBING 'WATER-LEAKS' became its own WATER LEAK type in
+2014), the moved complaints are counted under their first-year type in both years (relabelings, like_for_like).
 Every number in the report, the charts and outputs/answers/q05.md is computed here.
 """
 from __future__ import annotations
 
+import re
 import textwrap
 
 import numpy as np
 import pandas as pd
 
-from nyc311 import clean, rules
+from nyc311 import clean, rules, taxonomy
 from nyc311.clean import clean_glob
 from nyc311.report import Report
 
@@ -24,6 +28,12 @@ AGENCY_LABEL_SHARE = 0.10   # agencies with at least this share of a type's rows
 COMPLAINTS = rules.COMPLAINTS_SQL
 TIMES_FROM = 1.5            # "N times the next type" from this ratio up; below it, "N% more"
 EN = "–"
+MOVE_WINDOW_DAYS = 14       # a descriptor that stops and a same-agency type or descriptor of the same name that starts
+                            # within this many days of it are one relabeling (HPD's 2014 recoding retired descriptors
+                            # from late February and started the new types on March 11)
+MOVE_MIN_PCT = 5            # a relabeling is applied to a top type when the moved descriptor held at least this % of
+                            # the type's complaints in the first compared year
+MOVES_SHOWN = 3             # relabelings spelled out per top type in the findings
 
 
 # ---------- period ----------
@@ -143,6 +153,122 @@ def change_table(con, src, top, y0, y1, y2=None):
     if y2 is not None:
         out["change_later_pts"] = out[f"pct_{y2}"] - out[f"pct_{y1}"]
     return out, totals
+
+
+# ---------- like-for-like check: relabeled descriptors ----------
+
+def name_key(s):
+    """Matching key for descriptor and type names: taxonomy.normalize (case, spacing, separators, plural), with '-'
+    read as a space, so 'WATER-LEAKS' and 'WATER LEAK' match; '' for a missing name."""
+    if not isinstance(s, str):
+        return ""
+    return re.sub(r"[-\s]+", " ", taxonomy.normalize(s)).strip()
+
+
+def descriptor_combos(con, src, years=()):
+    """One row per (agency, raw complaint_type, canonical_type, descriptor) among complaints: rows, first and last
+    opening time, and rows opened in each of `years` (n_<year>). A grouped aggregate: a few thousand rows."""
+    ny = "".join(f", count_if(year(created) = {int(y)}) as n_{int(y)}" for y in years)
+    df = con.sql(f"""select coalesce(agency, '(none)') as agency, complaint_type, canonical_type, descriptor,
+                            count(*) as n, min(created) as first, max(created) as last{ny}
+                     from {src} where {COMPLAINTS} and canonical_type is not null and created is not null
+                     group by all""").df()
+    for c in ["first", "last"]:
+        df[c] = pd.to_datetime(df[c])
+    return df
+
+
+def _year_cols(df):
+    return [c for c in df.columns if re.fullmatch(r"n_\d{4}", c)]
+
+
+MOVE_COLUMNS = ["agency", "old_type", "old_raw_type", "old_descriptor", "n_old", "last_old", "new_type",
+                "new_raw_type", "new_descriptor", "via", "n_new", "first_new", "days", "weight"]
+
+
+def relabelings(combos, d0, d1, window=MOVE_WINDOW_DAYS):
+    """Descriptors an agency moved from one canonical type to another: one row per (old, new) pair.
+
+    Old: an (agency, canonical type, descriptor) group (descriptor names matched with name_key) whose rows stop more
+    than `window` days before the data end (d1). New: a group of the same agency under another canonical type that
+    starts within `window` days of that stop, and more than `window` days after the data start (d0): either a
+    descriptor of the same name (via 'descriptor') or a whole raw complaint type named like the old descriptor (via
+    'type'; it then supersedes descriptor matches in the same canonical type). weight: the old group's share (by
+    rows) of all old groups feeding the same new group, so a successor fed by several is split among them. Year
+    columns n_<year> of `combos` come through as n_<year>_old and n_<year>_new."""
+    if combos.empty:
+        return pd.DataFrame(columns=MOVE_COLUMNS)
+    c = combos.assign(dkey=combos.descriptor.map(name_key), tkey=combos.complaint_type.map(name_key))
+    c = c.sort_values(["n", "complaint_type"], ascending=[False, True], na_position="last")
+    win = pd.Timedelta(days=window)
+    ys = _year_cols(c)
+    agg = {"n": "sum", "first": "min", "last": "max", **{y: "sum" for y in ys}}
+    by_desc = c[c.dkey != ""].groupby(["agency", "canonical_type", "dkey"], as_index=False).agg(
+        {**agg, "complaint_type": "first", "descriptor": "first"}).rename(columns={"dkey": "key"})
+    old = by_desc[by_desc["last"] < pd.Timestamp(d1) - win]
+    by_desc["via"] = "descriptor"
+    by_type = c.groupby(["agency", "canonical_type", "complaint_type"], as_index=False).agg(
+        {**agg, "tkey": "first"}).rename(columns={"tkey": "key"})
+    by_type["descriptor"], by_type["via"] = None, "type"
+    new = pd.concat([by_desc, by_type], ignore_index=True)
+    new = new[(new.key != "") & (new["first"] > pd.Timestamp(d0) + win)]
+    m = old.merge(new, on=["agency", "key"], suffixes=("_old", "_new"))
+    m = m[m.canonical_type_old != m.canonical_type_new]
+    m = m.assign(days=(m.first_new.dt.normalize() - m.last_old.dt.normalize()).dt.days)
+    m = m[m.days.abs() <= window]
+    has_type = m[m.via == "type"][["agency", "key", "canonical_type_old", "canonical_type_new"]].drop_duplicates()
+    m = m.merge(has_type.assign(_t=True), how="left", on=list(has_type.columns))
+    m = m[(m.via == "type") | m._t.isna()].drop(columns="_t")
+    if m.empty:
+        return pd.DataFrame(columns=MOVE_COLUMNS)
+    succ = ["agency", "canonical_type_new", "via", "complaint_type_new", "key"]
+    m["weight"] = m.n_old / m.groupby(succ, dropna=False).n_old.transform("sum")
+    m = m.rename(columns={"canonical_type_old": "old_type", "complaint_type_old": "old_raw_type",
+                          "descriptor_old": "old_descriptor", "canonical_type_new": "new_type",
+                          "complaint_type_new": "new_raw_type", "descriptor_new": "new_descriptor"})
+    for c_ in ["n_old", "n_new"] + [f"{y}_old" for y in ys] + [f"{y}_new" for y in ys]:
+        m[c_] = m[c_].astype(int)
+    keep = MOVE_COLUMNS + [f"{y}_old" for y in ys] + [f"{y}_new" for y in ys]
+    return m.sort_values(["n_old", "old_type"], ascending=[False, True])[keep].reset_index(drop=True)
+
+
+LL_COLUMNS = ["year_a", "year_b", "canonical_type", "n_a", "pct_a", "n_b", "pct_b", "change_pts", "n_b_same_labels",
+              "pct_b_same_labels", "change_same_labels_pts", "rows_moved_out_b", "rows_moved_in_b", "relabeled"]
+
+
+def like_for_like(change, moves, ya, yb, totals, min_pct=MOVE_MIN_PCT):
+    """Each top type's share in ya and yb, with relabeled descriptors counted under their ya type in yb too.
+
+    A relabeling counts for top type T between ya and yb when the old descriptor has rows in ya and none from Jan 1
+    of yb, its successor has rows in yb, it left T or joined T, and the old descriptor held at least `min_pct` % of
+    T's ya complaints. T's yb count on ya's labels = its yb count + the weighted yb rows of successors of
+    descriptors that left T - those of descriptors that joined T. Returns (one row per top type, the relabelings
+    applied with the top type and direction)."""
+    a_col, b_col = f"n_{ya}_old", f"n_{yb}_new"
+    if len(moves) and {a_col, b_col} <= set(moves.columns):
+        mv = moves[(moves[a_col] > 0) & (moves.last_old < pd.Timestamp(int(yb), 1, 1)) & (moves[b_col] > 0)]
+    else:
+        mv = pd.DataFrame(columns=MOVE_COLUMNS + [a_col, b_col])
+    rows, applied = [], []
+    for r in change.itertuples(index=False):
+        t, n_a, n_b = r.canonical_type, getattr(r, f"n_{ya}"), getattr(r, f"n_{yb}")
+        big = mv[a_col] >= min_pct / 100 * n_a
+        out, inn = mv[(mv.old_type == t) & big], mv[(mv.new_type == t) & big]
+        add = float((out.weight * out[b_col]).sum()) if len(out) else 0.0
+        sub = float((inn.weight * inn[b_col]).sum()) if len(inn) else 0.0
+        n_ll = n_b + add - sub
+        pa, pb = 100 * n_a / max(totals[ya], 1), 100 * n_b / max(totals[yb], 1)
+        pll = 100 * n_ll / max(totals[yb], 1)
+        rows.append({"year_a": int(ya), "year_b": int(yb), "canonical_type": t, "n_a": int(n_a), "pct_a": pa,
+                     "n_b": int(n_b), "pct_b": pb, "change_pts": pb - pa, "n_b_same_labels": n_ll,
+                     "pct_b_same_labels": pll, "change_same_labels_pts": pll - pa, "rows_moved_out_b": add,
+                     "rows_moved_in_b": sub, "relabeled": bool(len(out) or len(inn))})
+        applied += [x.assign(top_type=t, direction=d, year_a=int(ya), year_b=int(yb))
+                    for x, d in ((out, "out"), (inn, "in")) if len(x)]
+    ll = pd.DataFrame(rows, columns=LL_COLUMNS)
+    used = (pd.concat(applied, ignore_index=True) if applied else
+            pd.DataFrame(columns=MOVE_COLUMNS + ["top_type", "direction", "year_a", "year_b"]))
+    return ll, used
 
 
 # ---------- charts ----------
@@ -276,12 +402,19 @@ def run(cfg):
     years = clean.full_years(con, src)
     pick = comparison_years(years)
     change, totals = (None, {})
+    moves, ll, used = pd.DataFrame(columns=MOVE_COLUMNS), None, None
     if pick is not None:
         change, totals = change_table(con, src, top, *pick)
+        moves = relabelings(descriptor_combos(con, src, [y for y in pick if y is not None]), d0, d1)
+        pairs = [(pick[0], pick[1])] + ([(pick[1], pick[2])] if pick[2] is not None else [])
+        parts = [like_for_like(change, moves, a, b, totals) for a, b in pairs]
+        ll = pd.concat([x for x, _ in parts], ignore_index=True)
+        used = pd.concat([u for _, u in parts if len(u)] or [parts[0][1]], ignore_index=True)
 
     res = {"top": top, "counts": counts, "total": total, "excluded": excl, "period": period, "period_long": period_l,
            "n_outside_period": int(n_outside), "n_days": (d1 - d0).days + 1, "full_years": years, "change": change,
-           "totals": totals, "years": pick[:2] if pick else None, "later_year": pick[2] if pick else None}
+           "totals": totals, "years": pick[:2] if pick else None, "later_year": pick[2] if pick else None,
+           "relabelings": moves, "like_for_like": ll, "relabelings_applied": used}
 
     agg = cfg.out_dir / "agg"
     agg.mkdir(parents=True, exist_ok=True)
@@ -292,12 +425,15 @@ def run(cfg):
     if change is not None:
         y0, y1 = res["years"]
         change.to_csv(agg / "q05_top10_change.csv", index=False)
+        ll.to_csv(agg / "q05_like_for_like.csv", index=False)
+        used.to_csv(agg / "q05_relabelings.csv", index=False)
         chart_change(change, y0, y1, figs / "q05_top10_change.png",
                      f"How the top {len(top)} complaint types changed, {y0} vs. {y1}", _change_note(res),
                      y2=res["later_year"])
     else:
         (figs / "q05_top10_change.png").unlink(missing_ok=True)
-        (agg / "q05_top10_change.csv").unlink(missing_ok=True)
+        for name in ["q05_top10_change.csv", "q05_like_for_like.csv", "q05_relabelings.csv"]:
+            (agg / name).unlink(missing_ok=True)
     _report(cfg, res)
     _write_answer(cfg, res)
     return res
@@ -354,6 +490,19 @@ def _report(cfg, res):
         later = f", plus {res['later_year']}" if res["later_year"] is not None else ""
         rep.table(res["change"].drop(columns="label"),
                   title=f"{y0} vs {y1}{later} (pct of that year's complaints)")
+        ll, used = res["like_for_like"], res["relabelings_applied"]
+        if ll.relabeled.any():
+            rep.table(ll[ll.relabeled][["year_a", "year_b", "canonical_type", "pct_a", "pct_b", "pct_b_same_labels",
+                                        "change_pts", "change_same_labels_pts"]],
+                      title="Like for like: top types with relabeled descriptors, counted under their year_a type")
+            rep.table(used[["year_a", "top_type", "direction", "agency", "old_raw_type", "old_descriptor", "n_old",
+                            "last_old", "new_raw_type", "new_descriptor", "first_new"]].assign(
+                last_old=lambda x: x.last_old.dt.strftime("%Y-%m-%d"),
+                first_new=lambda x: x.first_new.dt.strftime("%Y-%m-%d")),
+                title=f"Relabelings applied (window {MOVE_WINDOW_DAYS} days, >= {MOVE_MIN_PCT:g}% of the top type)")
+        else:
+            rep.add("", f"like for like: no top type gained or lost a descriptor through a recoding "
+                        f"({len(res['relabelings'])} relabelings detected among all types)")
     else:
         rep.add("", "fewer than two full calendar years: no change chart")
     rep.emit()
@@ -400,15 +549,20 @@ def _write_answer(cfg, res):
     ch = res["change"]
     if ch is not None:
         y0, y1 = res["years"]
+        ll, used = res["like_for_like"], res["relabelings_applied"]
         lines += [f"- **Change between {y0} and {y1}** ({_years_role(res)}). "
                   + _moves(ch, y0, y1, "change_pts")
-                  + f" Complaints: {res['totals'][y0]:,} in {y0}, {res['totals'][y1]:,} in {y1}."]
+                  + f" Complaints: {res['totals'][y0]:,} in {y0}, {res['totals'][y1]:,} in {y1}.",
+                  _relabel_line(ll, used, y0, y1)]
         y2 = res["later_year"]
         if y2 is not None:
             lines += [f"- **{y2}, the last full year (gray rings in the chart), against {y1}.** "
                       + _moves(ch, y1, y2, "change_later_pts")
                       + f" Complaints: {res['totals'][y2]:,} in {y2}. It is shown apart so the pandemic shift does "
                       "not drive the comparison."]
+            u2 = used[used.year_a == y1] if len(used) else used
+            if len(u2):
+                lines += [_relabel_line(ll, used, y1, y2)]
         lines += ["", f"![How the top {len(top)} complaint types changed, {y0} vs. {y1}](figs/q05_top10_change.png)",
                   ""]
     else:
@@ -441,3 +595,56 @@ def _moves(ch, ya, yb, col):
 
 def _rank(v):
     return "n/a" if v is None or (isinstance(v, float) and np.isnan(v)) else str(int(v))
+
+
+def _pts(x):
+    return f"{x:+.1f}".replace("-", "\N{MINUS SIGN}") + " points"
+
+
+def _move_text(m):
+    """One relabeling, from the top type's side: 'lost HPD PLUMBING 'WATER-LEAKS' (...) to the WATER LEAK type ...'."""
+    old = (f"{m.agency} {m.old_raw_type} '{m.old_descriptor}' ({int(m.n_old):,} complaints, last "
+           f"{pd.Timestamp(m.last_old):%Y-%m-%d})")
+    new = f"the {m.new_raw_type} type" if m.via == "type" else f"{m.new_raw_type} '{m.new_descriptor}'"
+    first = f"from {pd.Timestamp(m.first_new):%Y-%m-%d}"
+    if m.direction == "out":
+        return f"lost {old} to {new} ({m.new_type}) {first}"
+    old = old.replace(" (", f" ({m.old_type}; ", 1)
+    return f"took over {old} as {new} {first}"
+
+
+def _relabel_line(ll, used, ya, yb):
+    """The like-for-like bullet for one comparison: which top types gained or lost descriptors through a recoding,
+    their shares with moved complaints counted under their `ya` type, and the biggest drop (and gain) on that basis."""
+    head = f"- **Like-for-like check ({ya} vs. {yb}).** "
+    rule = (f"a descriptor with at least {MOVE_MIN_PCT:g}% of a top type's {ya} complaints that stops while a "
+            f"same-agency type or descriptor of the same name starts within {MOVE_WINDOW_DAYS} days")
+    u = used[(used.year_a == ya) & (used.year_b == yb)] if len(used) else used
+    if not len(u):
+        return (head + f"No top type gained or lost a descriptor through an agency recoding between {ya} and {yb} "
+                f"(checked: {rule}), so these changes are not relabelings of that kind.")
+    x = ll[(ll.year_a == ya) & (ll.year_b == yb)]
+    shift = (x.change_pts - x.change_same_labels_pts).abs()
+    order = list(x.assign(_s=shift).sort_values("_s", ascending=False).canonical_type)
+    parts = []
+    for t in [t for t in order if t in set(u.top_type)]:  # the type whose number moves most first
+        g = u[u.top_type == t]
+        r = x[x.canonical_type == t].iloc[0]
+        moves = [_move_text(m) for m in g.itertuples()]
+        more = len(moves) - MOVES_SHOWN
+        moves = moves[:MOVES_SHOWN] + ([f"{more} more"] if more > 0 else [])
+        said = moves[0] if len(moves) == 1 else ", ".join(moves[:-1]) + " and " + moves[-1]
+        parts.append(f"{t} {said}: counted on {ya}'s labels, it goes from {r.pct_a:.1f}% to "
+                     f"{r.pct_b_same_labels:.1f}% of complaints ({_pts(r.change_same_labels_pts)}; "
+                     f"{_pts(r.change_pts)} as recorded).")
+    lo, lo_raw = x.loc[x.change_same_labels_pts.idxmin()], x.loc[x.change_pts.idxmin()]
+    hi, hi_raw = x.loc[x.change_same_labels_pts.idxmax()], x.loc[x.change_pts.idxmax()]
+
+    def one(r):
+        return f"{r.canonical_type}, {r.pct_a:.1f}% to {r.pct_b_same_labels:.1f}% ({_pts(r.change_same_labels_pts)})"
+    end = (f"On that basis the biggest drop is {one(lo)}, not {lo_raw.canonical_type}" if lo.canonical_type !=
+           lo_raw.canonical_type else f"On that basis the biggest drop is still {one(lo)}")
+    if hi.canonical_type != hi_raw.canonical_type:
+        end += f"; the biggest gain is {one(hi)}, not {hi_raw.canonical_type}"
+    return (head + f"Part of these changes is relabeling (found by the rule: {rule}). " + " ".join(parts) + " "
+            + end + ".")

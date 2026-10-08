@@ -390,3 +390,112 @@ def test_findings_use_the_report_markdown_subset_and_embed_both_figures(res, cle
     assert not re.search(r"<[a-zA-Z/][^>]*>", text)  # no raw HTML
     assert not re.search(r"(^|\s)_[^_\s][^_]*_(\s|$|[.,;])", text)  # italics with *, not _
 
+
+
+# ---------- unresolved complaints by year opened and agency ----------
+
+def test_unresolved_by_year_and_agency_reconciles_with_the_flag(res, con_src, cleaned_cfg):
+    t = res["unresolved_by_year_agency"]
+    assert t.n_unresolved.sum() == _one(con_src, f"select count(*) from {{src}} where {BASE} and unresolved")
+    assert t.n_complaints.sum() == _one(con_src, f"select count(*) from {{src}} where {BASE}")
+    assert t.pct_unresolved.between(0, 100).all() and (t.n_unresolved <= t.n_complaints).all()
+    assert not t.duplicated(["year", "agency"]).any()
+    y = res["by_year"].set_index("year")
+    per_year = t.groupby("year").n_complaints.sum()
+    assert (per_year == y.n_complaints.reindex(per_year.index)).all()
+    for yr, g in t[t.n_unresolved > 0].groupby("year"):
+        assert math.isclose(g.pct_of_year_unresolved.sum(), 100)
+    assert math.isclose(t.pct_of_all_unresolved.sum(), 100)
+    out = pd.read_csv(cleaned_cfg.out_dir / "agg" / "q04_unresolved_by_year_agency.csv")
+    assert len(out) == len(t) and out.n_unresolved.sum() == t.n_unresolved.sum()
+    m = res["unresolved_by_month"]
+    assert m.n_unresolved.sum() == t.n_unresolved.sum() and m.month.between(1, 12).all()
+
+
+def _toy_unresolved(block=True):
+    """Years 2010-2014, 1,200 complaints a month, 1% unresolved; in 2011 agency X leaves many open (Feb-Apr only
+    if block, else spread over the whole year) and Y a few."""
+    ya, months = [], []
+    for y in range(2010, 2015):
+        for m in range(1, 13):
+            u = 12
+            if y == 2011:
+                u = (300 if 2 <= m <= 4 else 12) if block else 87
+            months.append((y, m, 1200, u))
+        nu = sum(r[3] for r in months if r[0] == y)
+        if y == 2011:
+            ya += [(y, "X", 9000, nu - 60), (y, "Y", 4000, 40), (y, "Z", 1400, 20)]
+        else:
+            ya += [(y, "X", 9000, nu - 20), (y, "Y", 5400, 20)]
+    ya = pd.DataFrame(ya, columns=["year", "agency", "n_complaints", "n_unresolved"])
+    months = pd.DataFrame(months, columns=["year", "month", "n_complaints", "n_unresolved"])
+    return ya, months
+
+
+def test_unresolved_peak_names_the_year_its_agencies_and_a_short_block_of_months():
+    ya, months = _toy_unresolved(block=True)
+    u = q4.unresolved_peak(ya, months, min_n=100)
+    n11 = 3 * 300 + 9 * 12
+    assert u["peak"] == 2011 and u["n"] == n11 and u["stands_out"]
+    assert u["total"] == ya.n_unresolved.sum()
+    assert u["share_all"] == pytest.approx(100 * n11 / ya.n_unresolved.sum())
+    assert u["others"] == 4 and u["typical"] == pytest.approx(1.0)
+    assert list(u["agencies"].agency)[0] == "X" and u["agencies"].n_unresolved.iloc[0] == n11 - 60
+    b = u["block"]
+    assert (b["start"], b["end"]) == ((2011, 2), (2011, 4)) and b["months"] == 3
+    assert b["n"] == 900 and b["pct_of_year"] == pytest.approx(100 * 900 / n11)
+    assert b["label"] == "Feb–Apr 2011"
+    assert b["rate_lo"] == pytest.approx(25.0) and b["rate_hi"] == pytest.approx(25.0)
+
+
+def test_unresolved_peak_has_no_month_block_when_the_whole_year_is_high():
+    ya, months = _toy_unresolved(block=False)
+    u = q4.unresolved_peak(ya, months, min_n=100)
+    assert u["peak"] == 2011 and u["stands_out"] and u["block"] is None
+
+
+def test_unresolved_peak_with_one_year_cannot_compare_years():
+    ya, months = _toy_unresolved()
+    one = ya[ya.year == 2012]
+    u = q4.unresolved_peak(one, months[months.year == 2012], min_n=100)
+    assert u["peak"] == 2012 and u["others"] == 0 and not u["stands_out"] and u["block"] is None
+    text = q4._unresolved_line(u)
+    assert "cannot be compared" in text and "X" in text
+
+
+def test_unresolved_line_quotes_the_computed_numbers_and_hedges():
+    ya, months = _toy_unresolved(block=True)
+    u = q4.unresolved_peak(ya, months, min_n=100)
+    text = q4._unresolved_line(u)
+    assert text.startswith("- **Unresolved by year opened.**")
+    assert f"{u['n']:,}" in text and f"{u['share_all']:.0f}%" in text and f"{u['pct']:.1f}%" in text
+    a = u["agencies"].iloc[0]
+    assert f"X {int(a.n_unresolved):,}" in text
+    assert "Feb–Apr 2011" in text and f"{u['block']['n']:,}" in text
+    assert "cannot show why" in text and "q04_unresolved_by_year_agency.csv" in text
+    assert not re.search(r"\bnan\b|\bNone\b", text)
+
+
+def test_findings_report_unresolved_by_year(res, cleaned_cfg):
+    text = (cleaned_cfg.out_dir / "answers" / "q04.md").read_text()
+    lines = text.splitlines()
+    i = next(k for k, x in enumerate(lines) if x.startswith("- **Unresolved requests bias closed-only numbers.**"))
+    assert lines[i + 1].startswith("- **Unresolved by year opened.**")
+    u = res["unresolved_peak"]
+    assert str(u["peak"]) in lines[i + 1] and f"{u['n']:,}" in lines[i + 1]
+    block = (cleaned_cfg.out_dir / "reports" / "q04_response_times.txt").read_text()
+    assert f"opened in {u['peak']}, by agency" in block
+
+
+# ---------- district chart labels ----------
+
+def test_district_chart_names_each_side_on_its_own_side_of_zero():
+    ypos = np.array([0, 1, 2, 4.2, 5.2, 6.2])
+    vals = np.array([35.0, 14.0, 3.0, -8.0, -11.0, -14.0])
+    labs = {k: (x, y, ha) for k, x, y, ha in q4.side_labels(ypos, vals, span=35.0)}
+    sx, sy, sha = labs["slower"]
+    fx, fy, fha = labs["faster"]
+    assert sx > 0 and sha == "left" and sy < ypos.min()          # right of zero, in a row above the slower bars
+    assert fx < 0 and fha == "right" and fy > ypos.max()          # left of zero, in a row below the faster bars
+    only_up = q4.side_labels(ypos[:3], vals[:3], span=35.0)
+    assert [k for k, *_ in only_up] == ["slower"]

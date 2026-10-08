@@ -12,6 +12,7 @@ in b) and c), and its median is the one quoted as "excluding instant closures" e
 """
 from __future__ import annotations
 
+import calendar
 import warnings
 from pathlib import Path
 
@@ -45,6 +46,13 @@ DRIVER_TYPES = 5                # complaint types listed per district in q04_dis
 DESC_USED_PCT = 5               # a descriptor is part of an agency's work in a type if >= 5% of its closures there
 LIKE_FOR_LIKE_PCT = 50          # a shared type is like-for-like if every agency has >= 50% of its closures in
                                 # descriptors another agency in the type also uses (NULL descriptors never match)
+ELEVATED_X = 3                  # a year (or month) stands out when its share still open is at least 3 times the
+                                # median yearly share of the other years
+BLOCK_MAX_MONTHS = 6            # a run of consecutive standout months is reported as a block if it is this short...
+BLOCK_MIN_PCT = 50              # ...and holds at least this % of the peak year's unresolved complaints
+UNRESOLVED_COVER_PCT = 75       # agencies named for the peak year: largest first until they hold this % of it...
+UNRESOLVED_MAX_AGENCIES = 4     # ...but no more than this many
+SIDE_LABEL_GAP = 0.95           # district chart: series names sit this many rows outside their group of bars
 RESPONSE_SET = "excluding instant closures"
 STAT_SETS = [
     ("all closed complaints", "true"),
@@ -233,6 +241,105 @@ def by_year(con, full_years=()):
         from q4 group by year order by year""").df()
     y["full_year"] = y.year.isin(list(full_years))
     return y
+
+
+def unresolved_by_year_agency(con):
+    """Complaints and unresolved complaints by year opened x agency. pct_unresolved: of that agency's complaints that
+    year; pct_of_year_unresolved: of the year's unresolved; pct_of_all_unresolved: of every unresolved complaint."""
+    t = con.sql("""select year, coalesce(agency, '(none)') as agency, count(*) as n_complaints,
+                          count_if(unresolved) as n_unresolved
+                   from q4 where year is not null group by all""").df()
+    for c in ["year", "n_complaints", "n_unresolved"]:
+        t[c] = t[c].astype(int)
+    t["pct_unresolved"] = 100 * t.n_unresolved / t.n_complaints
+    year_total = t.groupby("year").n_unresolved.transform("sum")
+    t["pct_of_year_unresolved"] = (100 * t.n_unresolved / year_total.where(year_total > 0)).fillna(0.0)
+    total = t.n_unresolved.sum()
+    t["pct_of_all_unresolved"] = 100 * t.n_unresolved / total if total else 0.0
+    return t.sort_values(["year", "n_unresolved", "agency"], ascending=[True, False, True]).reset_index(drop=True)
+
+
+def unresolved_by_month(con):
+    """Complaints and unresolved complaints by month opened (year, month)."""
+    m = con.sql("""select year, month(created) as month, count(*) as n_complaints, count_if(unresolved) as n_unresolved
+                   from q4 where year is not null group by all order by 1, 2""").df()
+    for c in ["year", "month", "n_complaints", "n_unresolved"]:
+        m[c] = m[c].astype(int)
+    m["pct_unresolved"] = 100 * m.n_unresolved / m.n_complaints
+    return m
+
+
+def _month_label(start, end):
+    """'Feb–Jun 2011', 'Mar 2011' or 'Nov 2010–Feb 2011' for a run of months given as (year, month)."""
+    from nyc311.q05_top_types import EN
+
+    (y0, m0), (y1, m1) = start, end
+    a, b = calendar.month_abbr[m0], calendar.month_abbr[m1]
+    if (y0, m0) == (y1, m1):
+        return f"{a} {y0}"
+    return f"{a}{EN}{b} {y1}" if y0 == y1 else f"{a} {y0}{EN}{b} {y1}"
+
+
+def _month_block(months, peak, typical, min_n):
+    """The run of consecutive months around the peak year's month with the most unresolved complaints in which every
+    month (>= min_n complaints) has at least ELEVATED_X times the typical share still open; None if that month is not
+    elevated, or if the run is longer than BLOCK_MAX_MONTHS or holds less than BLOCK_MIN_PCT % of the year's."""
+    m = months.copy()
+    m["idx"] = m.year * 12 + m.month - 1
+    m["pct_unresolved"] = 100 * m.n_unresolved / m.n_complaints
+    in_year = m[m.year == peak]
+    if in_year.empty or in_year.n_unresolved.sum() == 0:
+        return None
+    hi = m[(m.n_complaints >= min_n) & (m.pct_unresolved > ELEVATED_X * typical)].set_index("idx").sort_index()
+    top = int(in_year.sort_values(["n_unresolved", "idx"], ascending=[False, True]).idx.iloc[0])
+    if top not in hi.index:
+        return None
+    lo_i = hi_i = top
+    while lo_i - 1 in hi.index:
+        lo_i -= 1
+    while hi_i + 1 in hi.index:
+        hi_i += 1
+    run = hi.loc[lo_i:hi_i]
+    n_year = int(run[run.year == peak].n_unresolved.sum())
+    pct_year = 100 * n_year / in_year.n_unresolved.sum()
+    if len(run) > BLOCK_MAX_MONTHS or pct_year < BLOCK_MIN_PCT:
+        return None
+    start, end = divmod(lo_i, 12), divmod(hi_i, 12)
+    start, end = (start[0], start[1] + 1), (end[0], end[1] + 1)
+    return {"start": start, "end": end, "months": len(run), "n": int(run.n_unresolved.sum()), "n_in_year": n_year,
+            "pct_of_year": pct_year, "label": _month_label(start, end),
+            "rate_lo": float(run.pct_unresolved.min()), "rate_hi": float(run.pct_unresolved.max())}
+
+
+def unresolved_peak(ya, months, min_n=MIN_N):
+    """The year opened with the highest share of complaints still open (among years with >= min_n complaints), set
+    against the other such years: its count, its share of all unresolved complaints, the agencies that hold most of
+    it and, if the year stands out (ELEVATED_X), a short block of months that holds most of it. None without
+    complaints."""
+    y = ya.groupby("year")[["n_complaints", "n_unresolved"]].sum()
+    y = y[y.n_complaints >= min_n]
+    if y.empty:
+        return None
+    y["pct"] = 100 * y.n_unresolved / y.n_complaints
+    total = int(ya.n_unresolved.sum())
+    peak = int(y.sort_values(["pct", "n_unresolved"], ascending=False).index[0])
+    others = y.drop(index=peak)
+    typical = float(others.pct.median()) if len(others) else float("nan")
+    p = y.loc[peak]
+    stands_out = bool(len(others)) and p.pct > ELEVATED_X * typical
+    a = ya[(ya.year == peak) & (ya.n_unresolved > 0)].sort_values(["n_unresolved", "agency"], ascending=[False, True])
+    a = a.assign(pct_unresolved=100 * a.n_unresolved / a.n_complaints,
+                 pct_of_year=100 * a.n_unresolved / max(int(p.n_unresolved), 1))
+    k = int((a.pct_of_year.cumsum().shift(fill_value=0) < UNRESOLVED_COVER_PCT).sum())
+    agencies = a.head(min(max(k, 1), UNRESOLVED_MAX_AGENCIES))
+    return {"years": y, "total": total, "peak": peak, "n": int(p.n_unresolved), "n_complaints": int(p.n_complaints),
+            "pct": float(p.pct), "share_all": 100 * p.n_unresolved / total if total else 0.0,
+            "others": len(others), "typical": typical,
+            "lo": float(others.pct.min()) if len(others) else float("nan"),
+            "hi": float(others.pct.max()) if len(others) else float("nan"),
+            "is_last": peak == int(y.index.max()) and len(others) > 0, "stands_out": stands_out,
+            "agencies": agencies[["agency", "n_complaints", "n_unresolved", "pct_unresolved", "pct_of_year"]],
+            "block": _month_block(months, peak, typical, min_n) if stands_out else None}
 
 
 # ---------- b) neighborhoods ----------
@@ -533,6 +640,20 @@ def _hbar_axes(ax, left=False):
     ax.tick_params(axis="y", labelcolor="#333333")
 
 
+def side_labels(ypos, vals, span):
+    """Where the series names go, as (key, x, y, ha): 'slower' right of zero in a row just above the slower bars,
+    'faster' left of zero in a row just below the faster bars (the y axis is inverted), so each name sits on its
+    own side of the zero line without crossing a bar or a value label."""
+    ypos, vals = np.asarray(ypos, float), np.asarray(vals, float)
+    out = []
+    pos, neg = ypos[vals > 0], ypos[vals < 0]
+    if len(pos):
+        out.append(("slower", 0.02 * span, pos.min() - SIDE_LABEL_GAP, "left"))
+    if len(neg):
+        out.append(("faster", -0.02 * span, neg.max() + SIDE_LABEL_GAP, "right"))
+    return out
+
+
 def chart_districts(d, path, note):
     from matplotlib.figure import Figure
 
@@ -547,7 +668,7 @@ def chart_districts(d, path, note):
         hidden = len(d) - 2 * k
     else:
         show, ypos, hidden = ordered, np.arange(len(ordered)), 0
-    fig = Figure(figsize=(8, 0.32 * len(ypos) + 1.9))
+    fig = Figure(figsize=(8, 0.32 * (len(ypos) + 2) + 1.9))
     ax = fig.subplots()
     vals = show.adj_pct.to_numpy()
     colors = [nyt.CORAL.band if v > 0 else nyt.SAGE.band for v in vals]
@@ -558,7 +679,6 @@ def chart_districts(d, path, note):
         _text(ax, v + (0.015 if v >= 0 else -0.015) * span, y, _pct(v), hue.line, ha="left" if v >= 0 else "right",
               fontsize=9, fontweight="bold")
     ax.set_yticks(ypos, show.short)
-    ax.invert_yaxis()
     ax.axvline(0, color="#333333", linewidth=1.0, zorder=3)
     ax.set_xlim(-span * 1.25 if vals.min() < 0 else 0, span * 1.25 if vals.max() > 0 else 0)
     _hbar_axes(ax)
@@ -566,14 +686,16 @@ def chart_districts(d, path, note):
     if hidden:
         _text(ax, 0, k + 0.1, f"{hidden} districts in between", nyt.NOTE_GRAY, ha="center", fontsize=9,
               fontstyle="italic", zorder=4, bbox={"facecolor": "white", "edgecolor": "none", "pad": 2})
-    # series names sit on the empty side of the zero line, next to their group
-    pos, neg = ypos[vals > 0], ypos[vals < 0]
-    if len(pos):
-        _text(ax, -0.03 * span, pos.mean(), "Slower than typical", nyt.CORAL.line, ha="right", fontweight="bold",
-              fontsize=12)
-    if len(neg):
-        _text(ax, 0.03 * span, neg.mean(), "Faster than typical", nyt.SAGE.line, ha="left", fontweight="bold",
-              fontsize=12)
+    # series names on their own side of the zero line, in a row of their own next to their group
+    labels = side_labels(ypos, vals, span)
+    names = {"slower": ("Slower than typical", nyt.CORAL), "faster": ("Faster than typical", nyt.SAGE)}
+    for key, x, y, ha in labels:
+        text, hue = names[key]
+        _text(ax, x, y, text, hue.line, ha=ha, fontweight="bold", fontsize=12)
+    keys = {key for key, *_ in labels}
+    top = ypos.min() - (SIDE_LABEL_GAP + 0.55 if "slower" in keys else 0.6)
+    bottom = ypos.max() + (SIDE_LABEL_GAP + 0.55 if "faster" in keys else 0.6)
+    ax.set_ylim(bottom, top)  # inverted: the slowest district at the top
     nyt.title(fig, "Where 311 complaints take longer than typical to close")
     nyt.note(fig, note)
     return nyt.save(fig, path)
@@ -639,6 +761,9 @@ def run(cfg):
     shown = compared_agencies(agencies)
     full = clean.full_years(con, src)
     years = by_year(con, full)
+    unres_ya = unresolved_by_year_agency(con)
+    unres_months = unresolved_by_month(con)
+    unres_peak = unresolved_peak(unres_ya, unres_months)
     precision = con.sql("""select 100 * avg((date_only_created or date_only_closed)::int),
                            100 * avg((date_only_created and date_only_closed)::int)
                            from q4 where duration_h is not null""").fetchone()
@@ -674,12 +799,14 @@ def run(cfg):
            "within_type": wt, "n_response_set": int(n_resp), "excl": excl, "period": period,
            "period_long": period_l, "precision": precision, "n_instant": int(n_instant),
            "instant_by_agency": instant_by_agency, "n_no_cd": int(n_no_cd), "agency_chart": shown,
-           "district_drivers": drivers, "full_years": full}
+           "district_drivers": drivers, "full_years": full, "unresolved_by_year_agency": unres_ya,
+           "unresolved_by_month": unres_months, "unresolved_peak": unres_peak}
 
     agg = cfg.out_dir / "agg"
     agg.mkdir(parents=True, exist_ok=True)
     for name in ["summary", "outliers", "type_outliers", "no_duration", "by_agency", "by_year", "boroughs",
-                 "variance", "agency_effects", "agency_coverage", "within_type", "district_drivers"]:
+                 "variance", "agency_effects", "agency_coverage", "within_type", "district_drivers",
+                 "unresolved_by_year_agency", "unresolved_by_month"]:
         res[name].to_csv(agg / f"q04_{name}.csv", index=False)
     districts.drop(columns="short").to_csv(agg / "q04_districts.csv", index=False)
 
@@ -749,6 +876,16 @@ def _report(cfg, res):
               title=f"By agency (>= {MIN_N} closed), days; charted: share_pct >= {MIN_AGENCY_SHARE:g}% of the "
                     f"response set ({len(res['agency_chart'])} agencies)")
     rep.table(res["by_year"], max_rows=13, title="By year opened (adj_pct_vs_first: same type and borough, sample)")
+    u = res["unresolved_peak"]
+    if u is not None:
+        b = u["block"]
+        rep.add(f"unresolved by year opened: highest {u['peak']} {u['pct']:.2f}% ({u['n']:,}, {u['share_all']:.1f}% of "
+                f"all {u['total']:,} unresolved); " + (f"other {u['others']} years {u['lo']:.2f}-{u['hi']:.2f}% "
+                                                       f"(median {u['typical']:.2f}%)" if u["others"] else
+                                                       "no other year to compare")
+                + (f"; block {b['label']}: {b['n']:,} ({b['pct_of_year']:.1f}% of the year's)" if b else ""))
+        rep.table(u["agencies"].head(UNRESOLVED_MAX_AGENCIES),
+                  title=f"Unresolved complaints opened in {u['peak']}, by agency (q04_unresolved_by_year_agency.csv)")
 
     rep.table(res["boroughs"][["borough", "n", "median_h", "adj_pct", "pct_unresolved"]],
               title="b) Boroughs: raw median hours and % vs typical for the same type and year")
@@ -815,6 +952,53 @@ def _agency_line(res):
                  f"{int(small.n_excl_instant.sum()):,} closures, {small.share_pct.sum():.1f}%) are too small to rank "
                  f"with them and are not charted; {meds}.")
     return line
+
+
+def _agency_counts(a):
+    """'X 948 (94%), Y 40 (4%) and Z 20 (2%)' from the agencies table of unresolved_peak."""
+    parts = [f"{r.agency} {int(r.n_unresolved):,} ({r.pct_of_year:.0f}%)" for r in a.itertuples()]
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _pct_range(lo, hi):
+    """'1.1% to 2.5%', or '1.0%' when both ends print the same."""
+    a, b = f"{lo:.1f}%", f"{hi:.1f}%"
+    return a if a == b else f"{a} to {b}"
+
+
+def _unresolved_line(u):
+    """The findings bullet on unresolved complaints by year opened (from unresolved_peak)."""
+    head = "- **Unresolved by year opened.** "
+    a = u["agencies"]
+    held = (f" By agency (share of {u['peak']}'s unresolved): {_agency_counts(a)}"
+            + (f", together {a.pct_of_year.sum():.0f}%" if len(a) > 1 else "") + ".") if len(a) else ""
+    ref = " Counts by year and agency: `q04_unresolved_by_year_agency.csv`; by month: `q04_unresolved_by_month.csv`."
+    peak = u["peak"]
+    if not u["others"]:
+        return (head + f"Only {peak} has at least {MIN_N} complaints, so years cannot be compared; {u['n']:,} of its "
+                f"complaints ({u['pct']:.1f}%) are still open." + held + ref)
+    if not u["stands_out"]:
+        return (head + f"The share still open is highest for {peak}, {u['pct']:.1f}% ({u['n']:,} complaints, "
+                f"{u['share_all']:.0f}% of all {u['total']:,} unresolved), against {_pct_range(u['lo'], u['hi'])} "
+                f"in the other {u['others']} years; no year is {ELEVATED_X} times the median of the others "
+                f"({u['typical']:.1f}%)." + held + ref)
+    txt = (head + f"{peak} stands out: {u['pct']:.1f}% of its complaints are still open ({u['n']:,}), against "
+           f"{_pct_range(u['lo'], u['hi'])} in the other {u['others']} years with at least {MIN_N} complaints "
+           f"(median {u['typical']:.1f}%), so {peak} alone holds {u['share_all']:.0f}% of all {u['total']:,} "
+           "unresolved complaints." + held)
+    b = u["block"]
+    if b:
+        txt += (f" Most were opened in {b['label']}: {b['n']:,} unresolved complaints"
+                + (f" ({b['pct_of_year']:.0f}% of {peak}'s)" if b["n"] == b["n_in_year"] else
+                   f" ({b['n_in_year']:,} of them in {peak}, {b['pct_of_year']:.0f}% of its total)")
+                + f", with {_pct_range(b['rate_lo'], b['rate_hi'])} of each month's complaints still open.")
+    if u["is_last"]:
+        txt += (f" {peak} is the most recent year, so some of these may still be in progress; the data cannot show "
+                "why they are open.")
+    else:
+        txt += (" These are likely records that were never closed out rather than requests still being worked on, "
+                "but the data cannot show why; they are missing from that year's closed-only statistics.")
+    return txt + ref
 
 
 def _year_line(res):
@@ -1015,6 +1199,7 @@ def _write_answer(cfg, res):
         "closed before opened, no date, other status). They are missing from every duration statistic; a request "
         "still open will take at least as long as it has already waited, so closed-only medians likely understate "
         "the true time to closure.",
+        *([_unresolved_line(res["unresolved_peak"])] if res.get("unresolved_peak") is not None else []),
         _agency_line(res),
         _year_line(res),
         "",
