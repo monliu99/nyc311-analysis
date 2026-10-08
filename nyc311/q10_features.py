@@ -12,11 +12,14 @@ snowfall that day, the day before and on the baseline days). Each test year is p
 TRAIN_YEARS calendar years before it, because the relations drift (the holiday dip and the weekday pattern shrink over
 the years). The last N_TYPICAL test years up to `rules.PROFILE_LAST_YEAR` are pooled as the typical case; later years
 (the pandemic) are reported one by one as a structural break. Benchmarks next to every model: last week's same-weekday
-count, the mean of the last 28 days, the training-window average, and a calendar-and-weather model of log(count)
-without recent counts.
+count, the 28-day mean from 7 to 34 days earlier, the training-window average, and a calendar-and-weather model of
+log(count) without recent counts. Week ahead means no forecast uses a count from the HORIZON - 1 days before the day it
+predicts (or that day), and training stops HORIZON days before a test year starts; the one exception is observed
+weather that day and the day before (OBSERVED_WEATHER), a stand-in for a weather forecast.
 
 A group's value is the drop in mean absolute percentage error (MAPE) when it is added to a forecast that lacks it:
-recent volume = calendar model -> full model; day of week = 28-day mean -> same-weekday baseline; holidays, month and
+recent volume = calendar model -> full model; day of week = week-ahead 28-day mean -> same-weekday baseline (both
+from the same weeks, 7+ days back); holidays, month and
 weather = baseline -> baseline + group (and, as a check, the rise in error when each is dropped from the full model).
 When the data have no later year to test on (the 5-week local sample) the module says why and reports what needs no
 training (the naive forecasts) and in-sample associations only.
@@ -47,10 +50,12 @@ from nyc311.report import Report
 STAGE = "q10_features"
 WEATHER_CSV = geo.DISTRICTS_GEOJSON.parent / "weather_central_park_daily.csv"
 REGIME_START = dt.date(2020, 3, 22)   # New York State on PAUSE (executive order 202.8) took effect
+HORIZON = 7                 # one week ahead: every count a forecast uses, and every training day, is 7+ days old
 BASE_WEEKS = 4              # baseline: mean of the counts 7, 14, 21 and 28 days earlier (same weekday)
 MIN_BASE_WEEKS = 3          # ... of which at least this many must be complete days
-LOOKBACK_DAYS = 28          # weekday-blind benchmark: mean of the last 28 days
+LOOKBACK_DAYS = 28          # weekday-blind benchmark: mean of the 28 days ending HORIZON days before (7 to 34 back)
 MIN_LOOKBACK_DAYS = 21
+LOOKBACK_TEXT = f"{LOOKBACK_DAYS}-day mean from {HORIZON} to {HORIZON + LOOKBACK_DAYS - 1} days earlier"
 TRAIN_YEARS = 3             # models are fit on the calendar years just before the test year (rolling window)
 MIN_TRAIN_DAYS = 365        # usable training days before a test year
 MIN_TEST_DAYS = 90          # usable days in a test year
@@ -95,14 +100,14 @@ VALUE_GROUPS = {
 }
 HOW = {
     "volume": "calendar-and-weather model without recent counts -> full model",
-    "dow": f"mean of the last {LOOKBACK_DAYS} days -> mean of the last {BASE_WEEKS} same weekdays",
+    "dow": f"{LOOKBACK_TEXT} -> mean of the last {BASE_WEEKS} same weekdays",
     "holiday": "baseline -> baseline + holidays",
     "season": "baseline -> baseline + month",
     "weather": "baseline -> baseline + weather",
 }
 HOW_TEXT = {
     "volume": "a calendar-and-weather model without recent counts vs the full model",
-    "dow": f"the mean of the last {LOOKBACK_DAYS} days vs the mean of the last {BASE_WEEKS} same weekdays",
+    "dow": f"the {LOOKBACK_TEXT} vs the mean of the last {BASE_WEEKS} same weekdays",
     "holiday": "added to the baseline",
     "season": "added to the baseline",
     "weather": "added to the baseline",
@@ -111,7 +116,7 @@ BREAK_RATIO = 1.5           # a later year whose calendar-model error is 1.5x th
 DRIFT_POINTS = 10           # a change of 10+ percentage points (weekend share, holiday dip) is called a drift
 MODELS = {   # the first eight are the chart's rows, in this order
     "calendar": "Calendar and weather, no recent counts",
-    "mean28": f"Mean of the last {LOOKBACK_DAYS} days",
+    "mean28": f"{LOOKBACK_DAYS}-day mean, {HORIZON}-{HORIZON + LOOKBACK_DAYS - 1} days earlier",
     "lag7": "Same weekday last week",
     "base": f"Mean of the last {BASE_WEEKS} same weekdays (baseline)",
     "base+holiday": "Baseline + holidays",
@@ -126,6 +131,10 @@ MODELS = {   # the first eight are the chart's rows, in this order
 }
 CHART_MODELS = list(MODELS)[:8]
 NAIVE = ["mean28", "lag7", "base"]
+# Every column a forecast reads on the day it predicts. All are known HORIZON days ahead except OBSERVED_WEATHER:
+# that day's and the day before's observed weather, which stands in for a weather forecast (said in the findings).
+FORECAST_INPUTS = list(dict.fromkeys([*NAIVE, *CAL_COLS, *(c for _, cols in GROUPS.values() for c in cols)]))
+OBSERVED_WEATHER = [*WEATHER_COLS, "tmax_rel", "tmin_rel"]
 WHY = {
     "volume": "recent weeks carry the current level (growth, campaigns, outbreaks, backlogs, a pandemic) that a "
               "calendar cannot know, and they are known a week ahead",
@@ -199,8 +208,9 @@ def weather_lags(w):
 
 def make_features(daily, weather):
     """One row per day: the count and its log; the baseline (mean count of the last BASE_WEEKS same weekdays, at least
-    MIN_BASE_WEEKS of them complete), log(count / baseline), the count exactly 7 days earlier and the mean of the last
-    28 days (at least MIN_LOOKBACK_DAYS complete); calendar dummies (Monday as the weekday base, all 12 months);
+    MIN_BASE_WEEKS of them complete), log(count / baseline), the count exactly 7 days earlier and the mean of the
+    LOOKBACK_DAYS days from HORIZON to HORIZON + LOOKBACK_DAYS - 1 days earlier (at least MIN_LOOKBACK_DAYS complete),
+    so no count from the last week is used; calendar dummies (Monday as the weekday base, all 12 months);
     holidays that day and their share among the baseline days; weather that day, the day before, and relative to the
     baseline days; years since the first day; the 2020 regime indicator; response-time outcomes as % when present."""
     d = daily.copy()
@@ -212,7 +222,7 @@ def make_features(daily, weather):
     for i in range(1, 7):
         d[f"dow_{i}"] = (dow == i).astype(float)
     d["weekend"] = (dow >= 5).astype(float)
-    start = d.date.min() - pd.Timedelta(days=LOOKBACK_DAYS)
+    start = d.date.min() - pd.Timedelta(days=max(7 * BASE_WEEKS, HORIZON + LOOKBACK_DAYS - 1))
     hol = USFederalHolidayCalendar().holidays(start, d.date.max())
     d["holiday"] = d.date.isin(hol).astype(float)
     for m in range(1, 13):
@@ -248,7 +258,8 @@ def make_features(daily, weather):
             d[c.replace("_f", "_rel")] = d[c] - on_base
         else:
             d[c.replace("_in", "_base")] = on_base
-    last = np.column_stack([back(counts, k) for k in range(1, LOOKBACK_DAYS + 1)])
+    # weekday-blind benchmark, known a week ahead: the LOOKBACK_DAYS days ending HORIZON days before (7 to 34 back)
+    last = np.column_stack([back(counts, k) for k in range(HORIZON, HORIZON + LOOKBACK_DAYS)])
     n_last = np.isfinite(last).sum(axis=1)
     d["mean28"] = np.where(n_last >= MIN_LOOKBACK_DAYS, np.nansum(last, axis=1) / np.maximum(n_last, 1), np.nan)
     d["trend_years"] = (d.date - d.date.min()).dt.days / 365.25
@@ -293,15 +304,18 @@ def group_availability(train, test):
 
 def plan_folds(u):
     """Test years: every calendar year with MIN_TEST_DAYS usable days and MIN_TRAIN_DAYS usable days in the TRAIN_YEARS
-    calendar years before it. Kept: the last N_TYPICAL of them up to rules.PROFILE_LAST_YEAR (flagged typical) and
+    calendar years before it. Training stops HORIZON days before the test year's first day, since a forecast for that
+    day is made a week ahead. Kept: the last N_TYPICAL of them up to rules.PROFILE_LAST_YEAR (flagged typical) and
     every later one. With no test year up to that year, every test year is typical. `train_all` (every earlier usable
-    day) is for the robustness check of the rolling window."""
+    day, same cutoff) is for the robustness check of the rolling window."""
     cand = []
     yr = u.date.dt.year
     for y in sorted(int(v) for v in yr.unique()):
-        train, test = u[(yr >= y - TRAIN_YEARS) & (yr < y)], u[yr == y]
+        test = u[yr == y]
+        known = u.date <= test.date.min() - pd.Timedelta(days=HORIZON)
+        train = u[known & (yr >= y - TRAIN_YEARS)]
         if len(train) >= MIN_TRAIN_DAYS and len(test) >= MIN_TEST_DAYS:
-            cand.append({"test_year": y, "train": train, "test": test, "train_all": u[yr < y]})
+            cand.append({"test_year": y, "train": train, "test": test, "train_all": u[known]})
     early = [p for p in cand if p["test_year"] <= rules.PROFILE_LAST_YEAR][-N_TYPICAL:]
     later = [p for p in cand if p["test_year"] > rules.PROFILE_LAST_YEAR]
     if not early:
@@ -344,6 +358,19 @@ def _years_label(years):
         else ", ".join(map(str, ys))
 
 
+def fold_predictions(p, groups):
+    """Every model's forecast for the fold's test days, in their order: the naive forecasts read the test days'
+    columns; the fitted ones are fit on p["train"] (p["train_all"] for full_all) with the estimable `groups`."""
+    tr, te = p["train"], p["test"]
+    preds = {"calendar": fit_calendar(tr, te), "constant": np.full(len(te), np.exp(tr.log_n.mean())),
+             "mean28": te.mean28.to_numpy(float), "lag7": te.lag7.to_numpy(float), "base": te.base.to_numpy(float),
+             "full": fit_ratio(tr, te, groups), "full_all": fit_ratio(p["train_all"], te, groups)}
+    for g in groups:
+        preds[f"base+{g}"] = fit_ratio(tr, te, [g])
+        preds[f"full-{g}"] = fit_ratio(tr, te, [h for h in groups if h != g])
+    return preds
+
+
 def naive_scores(f):
     """MAPE of the forecasts that need no training, on the days where all of them exist."""
     d = f.dropna(subset=["log_n", *NAIVE])
@@ -379,12 +406,7 @@ def evaluate(f):
         fold_groups.append(ga.assign(test_year=y))
         est = set(ga.group[ga.estimable])
         groups = [g for g in GROUPS if g in est]
-        preds = {"calendar": fit_calendar(tr, te), "constant": np.full(len(te), np.exp(tr.log_n.mean())),
-                 "mean28": te.mean28.to_numpy(float), "lag7": te.lag7.to_numpy(float), "base": te.base.to_numpy(float),
-                 "full": fit_ratio(tr, te, groups), "full_all": fit_ratio(p["train_all"], te, groups)}
-        for g in groups:
-            preds[f"base+{g}"] = fit_ratio(tr, te, [g])
-            preds[f"full-{g}"] = fit_ratio(tr, te, [h for h in groups if h != g])
+        preds = fold_predictions(p, groups)
         a = te.n.to_numpy(float)
         for m, label in MODELS.items():
             ape = 100 * np.abs(a - preds[m]) / a if m in preds else None
@@ -960,7 +982,8 @@ def _chart_text(res):
         else:
             tail = f"; holidays, month and weather cut that to {full:.1f}%"
         n_typ = int(ev["scores"].query("model == 'base' and typical").n_test.sum())
-        note = (f"Note: Mean absolute percentage error of one-week-ahead forecasts of daily complaints. Baseline: mean "
+        note = (f"Note: Mean absolute percentage error of one-week-ahead forecasts of daily complaints; no forecast uses "
+                f"a count less than {HORIZON} days old. Baseline: mean "
                 f"of the counts 7, 14, 21 and 28 days earlier. Fitted models use the {TRAIN_YEARS} calendar years "
                 f"before each test year; {lab} {'pools' if len(ev['typical_years']) > 1 else 'covers'} {n_typ:,} test "
                 "days. Light sage: the baseline adjusted for "
@@ -1009,6 +1032,8 @@ def _report(cfg, res):
     rep.table(t[["feature", "benchmark", "n", "n_years", "rho", "rho_median", "effect_pct", "ci_low", "ci_high", "p",
                  "hac_lags", "significant"]].round(3),
               title="Response times: one test per feature (OLS on mix-adjusted log time, HAC)")
+    for line in _multiple_tests_line(rt):
+        rep.add("", line[2:].replace("**", ""))
     if rt["joint"] is not None:
         rep.table(rt["joint"].round(4), title="Joint model, type-and-year benchmark, HAC (Wald p)")
     else:
@@ -1036,11 +1061,13 @@ def _write_answer(cfg, res):
         "by modeling log(count / baseline) on holidays (that day, and holidays among the baseline days), month, and "
         "weather (high and low temperature relative to the baseline days; precipitation and snowfall that day, the day "
         "before and on the baseline days). There is no long-run trend: the level comes from the recent weeks. "
-        f"Models are fit on the {TRAIN_YEARS} calendar years before each test year and scored on that year by the "
-        "mean absolute percentage error (MAPE).",
+        f"Models are fit on the {TRAIN_YEARS} calendar years before each test year (up to {HORIZON} days before it "
+        "starts) and scored on that year by the mean absolute percentage error (MAPE). No forecast or benchmark uses "
+        f"a count from fewer than {HORIZON} days before the day it predicts; observed weather that day and the day "
+        "before is the one exception, standing in for a weather forecast.",
         "- **Value of a feature group:** the drop in MAPE when it is added to a forecast that lacks it. Recent volume: "
-        "a calendar-and-weather model without recent counts vs the full model. Day of week: the mean of the last "
-        f"{LOOKBACK_DAYS} days vs the mean of the last {BASE_WEEKS} same weekdays. Holidays, month and weather: the "
+        f"a calendar-and-weather model without recent counts vs the full model. Day of week: the {LOOKBACK_TEXT} vs "
+        f"the mean of the last {BASE_WEEKS} same weekdays (both known a week ahead). Holidays, month and weather: the "
         "baseline vs the baseline plus that group; as a check, the rise in error when each is dropped from the full "
         "model.",
         "",
@@ -1058,6 +1085,7 @@ def _write_answer(cfg, res):
         "- **Correlation, not causation.** Calendar, weather and volume all move together (cold months are heat "
         "season and also have fewer noise complaints), so an association with response times does not show that the "
         "feature slows closures.",
+        *_multiple_tests_line(res["response"]),
         f"- **Forecast use.** Observed weather overstates what a forecast can use; the baseline needs the counts 7 to "
         f"{7 * BASE_WEEKS} days back, so it serves horizons up to a week. Standard errors are HAC (Newey-West, "
         f"{_plural(_hac_lags(n_rt), 'lag')} for {_plural(n_rt, 'day')}) for day-to-day autocorrelation; one-feature "
@@ -1069,6 +1097,25 @@ def _write_answer(cfg, res):
     path = cfg.out_dir / "answers" / "q10.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines))
+
+
+def _multiple_tests_line(rt):
+    """How many one-feature response-time tests ran, how many would pass by chance at ALPHA, and which passes would
+    not survive a Bonferroni threshold. Empty with fewer than two estimable tests."""
+    est = rt["tests"][rt["tests"].estimable]
+    n = len(est)
+    if n < 2:
+        return []
+    k, thr = int(est.significant.sum()), ALPHA / n
+    weak = est[est.significant & (est.p >= thr)].sort_values("p")
+    line = (f"- **Multiple tests.** {_plural(n, 'one-feature response-time test')} were run, so about "
+            f"{n * ALPHA:.1f} would pass p < {ALPHA} by chance even if no feature were linked to response times; "
+            f"{k} passed")
+    if k:
+        line += f", {int((est.p < thr).sum())} of them also below the Bonferroni threshold (p < {thr:.2g})"
+        if len(weak):
+            line += "; treat " + _and([f"{r.label} (p {_p(r.p)})" for r in weak.itertuples()]) + " as weak evidence"
+    return [line + "."]
 
 
 def _year_level_caveat(res):
@@ -1121,7 +1168,7 @@ def _full_lines(res):
                       if len(adds) else f"No fitted group adds {MIN_GAIN}+ points on its own."))
     out = [f"- **Headline: {_typical_desc(ev)} ({n_typ:,} test days).** The mean of the last {BASE_WEEKS} same weekdays "
            f"missed daily complaints by {t['base']:.1f}% on average, against {t['lag7']:.1f}% for last week's "
-           f"same-weekday count, {t['mean28']:.1f}% for the mean of the last {LOOKBACK_DAYS} days, {t['calendar']:.1f}% "
+           f"same-weekday count, {t['mean28']:.1f}% for the {LOOKBACK_TEXT}, {t['calendar']:.1f}% "
            f"for a calendar-and-weather model without recent counts and {t['constant']:.1f}% for the training-window "
            f"average. Adding holidays, month and weather brings it to {t['full']:.1f}% ({_num(-gain, '+.1f')} points"
            + (f", mostly through {_and(adds.label.str.lower())}" if mostly else "") + f"). {verdict}"]
@@ -1174,6 +1221,11 @@ def _drift_lines(ev, dr):
         h_span = hol[hy].max() - hol[hy].min()
         drift = max(w_span, h_span) >= DRIFT_POINTS
         flatter = 100 * (abs(1 - wk[wy[-1]]) - abs(1 - wk[wy[0]])) <= -DRIFT_POINTS
+        # "worth less" only where the week-ahead comparison shows it: each later year's weekday value below the typical
+        dv = ev["values"].set_index("group").loc["dow"]
+        dow_later = {y: float(dv.get(f"value_{y}", np.nan)) for y in ev["later_years"]}
+        dow_later = {y: x for y, x in dow_later.items() if np.isfinite(x)}
+        less = flatter and bool(dow_later) and max(dow_later.values()) < dv[f"value_{lab}"]
         better = drift and t["full"] < t["full_all"]
         out.append(f"- **{'The patterns drift' if drift else 'Weekly and holiday patterns'}.** Weekend days averaged "
                    + _and([f"{100 * wk[y]:.0f}% of weekday volume in {y}" if i == 0 else f"{100 * wk[y]:.0f}% in {y}"
@@ -1184,7 +1236,9 @@ def _drift_lines(ev, dr):
                    + (f" {'f' if better else 'F'}it on the {TRAIN_YEARS} years before each test year, the full model "
                       f"misses by {t['full']:.1f}% in {lab}, vs {t['full_all']:.1f}% when fit on every earlier year."
                       if np.isfinite(t["full_all"]) else "")
-                   + (" Matching the weekday also matters less as weekends catch up with weekdays." if flatter else ""))
+                   + (" Matching the weekday is also worth less as weekends catch up with weekdays: "
+                      + _and([f"{_num(x, '+.1f')} points in {y}" for y, x in dow_later.items()])
+                      + f", vs {_num(dv[f'value_{lab}'], '+.1f')} in {lab}." if less else ""))
     typ_cal = t["calendar"]
     for y in later:
         s = ev["summary"].set_index("model")[str(y)]
@@ -1200,7 +1254,8 @@ def _drift_lines(ev, dr):
                    + f": complaints averaged {dr.loc[y, 'mean_n']:,.0f} a day vs {dr.loc[prev, 'mean_n']:,.0f} in "
                      f"{prev}" + (", and a model without recent counts keeps its training years' level."
                                   if s["calendar"] > s["base"] else ".")
-                   + (f" The {LOOKBACK_DAYS}-day mean beat the same-weekday mean: the weekday pattern had faded."
+                   + (f" The {LOOKBACK_DAYS}-day mean beat the same-weekday mean ({s['mean28']:.1f}% vs "
+                      f"{s['base']:.1f}%), so matching the weekday did not help in {y}."
                       if s["mean28"] < s["base"] else ""))
     return out
 
@@ -1219,8 +1274,8 @@ def _short_lines(res):
                    "exist): " + "; ".join(f"{r.label.lower()} {r.mape:.1f}% MAPE" for r in nv.itertuples()) + ".")
     else:
         out.append(f"- **Forecasts that need no training** cannot be scored either: fewer than {MIN_NAIVE_DAYS} days "
-                   f"have {MIN_BASE_WEEKS} earlier same weekdays and {MIN_LOOKBACK_DAYS} of the last "
-                   f"{LOOKBACK_DAYS} days.")
+                   f"have {MIN_BASE_WEEKS} earlier same weekdays and {MIN_LOOKBACK_DAYS} of the {LOOKBACK_DAYS} days "
+                   f"from {HORIZON} to {HORIZON + LOOKBACK_DAYS - 1} days earlier.")
     sig = a[(a.p < ALPHA)].sort_values("rho", key=np.abs, ascending=False)
     untestable = a[a.rho.isna()]
     out.append(f"- **In-sample links with daily volume** (Spearman, {int(a.n.max()) if len(a) else 0} days at most; "

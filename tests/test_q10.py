@@ -81,11 +81,80 @@ def test_baseline_is_the_mean_of_the_last_four_same_weekdays():
     assert f.loc[full, "base"] == pytest.approx(np.mean([n[full - pd.Timedelta(days=7 * k)] for k in range(1, 5)]))
     assert f.loc[full, "ratio_log"] == pytest.approx(np.log(n[full] / f.loc[full, "base"]))
     assert np.isnan(f.loc["2019-01-20", "base"])     # only 2 earlier same weekdays: no baseline
-    # the count exactly 7 calendar days earlier (not the previous row), and the 28-day mean of every day
+    # the count exactly 7 calendar days earlier (not the previous row), and the 28-day mean known a week ahead:
+    # the 28 days from 34 to 7 days earlier, never the six days just before the target
     assert f.loc["2019-02-10", "lag7"] == n["2019-02-03"]
     assert np.isnan(f.loc["2019-02-08", "lag7"])
-    m28 = n[(n.index >= full - pd.Timedelta(days=28)) & (n.index < full)]
-    assert f.loc[full, "mean28"] == pytest.approx(m28.mean())
+    m28 = n[(n.index >= full - pd.Timedelta(days=34)) & (n.index <= full - pd.Timedelta(days=7))]
+    assert len(m28) == 28 and f.loc[full, "mean28"] == pytest.approx(m28.mean())
+
+
+def _perturbed(d, days, factor=3.0):
+    d = d.copy()
+    d.loc[d.date.isin(days), "n"] = (factor * d.n[d.date.isin(days)]).round().astype(int)
+    return d
+
+
+def test_no_week_ahead_input_uses_counts_from_the_last_seven_days():
+    """Blow up the counts of the target day and the six days before it: no forecast input on that day may move.
+    (The original 28-day mean averaged days t-1..t-28 and failed this.)"""
+    d, w = synthetic_daily("2018-01-01", "2018-12-31")
+    f0 = q10.make_features(d, w).set_index("date")
+    inputs = [c for c in q10.FORECAST_INPUTS if c in f0]
+    assert {"lag7", "base", "mean28", "hol_base"} <= set(inputs) and len(inputs) == len(q10.FORECAST_INPUTS)
+    for t in pd.to_datetime(["2018-03-01", "2018-07-04", "2018-11-15"]):
+        recent = pd.date_range(t - pd.Timedelta(days=q10.HORIZON - 1), t)
+        f1 = q10.make_features(_perturbed(d, recent), w).set_index("date")
+        assert f1.loc[t, "n"] != f0.loc[t, "n"]                       # the perturbation took
+        pd.testing.assert_series_equal(f1.loc[t, inputs], f0.loc[t, inputs], check_names=False)
+        # ... while a count exactly a week back does move them (the test can see a change)
+        f2 = q10.make_features(_perturbed(d, [t - pd.Timedelta(days=q10.HORIZON)]), w).set_index("date")
+        assert f2.loc[t, "lag7"] != f0.loc[t, "lag7"] and f2.loc[t, "mean28"] != f0.loc[t, "mean28"]
+
+
+def test_only_the_declared_weather_inputs_use_the_last_week_and_they_use_no_counts():
+    """Weather on the target day and the day before stands in for a weather forecast (said in the findings); weather
+    two to six days back is not used at all."""
+    d, w = synthetic_daily("2018-01-01", "2018-12-31")
+    t = pd.Timestamp("2018-07-18")
+    f0 = q10.make_features(d, w).set_index("date")
+    inputs = list(q10.FORECAST_INPUTS)
+
+    def shifted(days):
+        w1 = w.copy()
+        m = w1.date.isin(days)
+        w1.loc[m, ["tmax_f", "tmin_f"]] += 15
+        w1.loc[m, ["prcp_in", "snow_in"]] += 1.0
+        return q10.make_features(d, w1).set_index("date").loc[t, inputs]
+
+    mid = pd.date_range(t - pd.Timedelta(days=q10.HORIZON - 1), t - pd.Timedelta(days=2))
+    pd.testing.assert_series_equal(shifted(mid), f0.loc[t, inputs], check_names=False)
+    moved = shifted([t - pd.Timedelta(days=1), t]) != f0.loc[t, inputs]
+    assert set(moved[moved].index) <= set(q10.OBSERVED_WEATHER) and moved.any()
+    assert not set(q10.OBSERVED_WEATHER) & {"lag7", "base", "mean28", "hol_base", "prcp_base", "snow_base"}
+
+
+def test_fitted_models_train_only_on_days_a_week_before_the_test_year():
+    """A forecast for Jan 1 is made by Dec 25, so the models scored on a test year are fit on days up to a week
+    before its first day; perturbing the last week before a test day leaves every model's forecast for it unchanged."""
+    d, w = synthetic_daily("2013-06-01", "2017-06-30")
+    gap = pd.Timedelta(days=q10.HORIZON)
+
+    def first_fold(dd):
+        u = q10.make_features(dd, w).dropna(subset=q10.REQUIRED)
+        p = next(p for p in q10.plan_folds(u) if p["test_year"] == 2017)
+        groups = [g for g in q10.GROUPS if q10.group_availability(p["train"], p["test"]).set_index("group")
+                  .loc[g, "estimable"]]
+        return p, groups
+
+    p0, groups = first_fold(d)
+    t = p0["test"].date.min()
+    assert p0["train"].date.max() <= t - gap and p0["train_all"].date.max() <= t - gap
+    p1, _ = first_fold(_perturbed(d, pd.date_range(t - gap + pd.Timedelta(days=1), t)))
+    pr0, pr1 = q10.fold_predictions(p0, groups), q10.fold_predictions(p1, groups)
+    assert set(pr0) >= set(q10.MODELS) - {f"{k}{g}" for k in ("base+", "full-") for g in q10.GROUPS if g not in groups}
+    for m in pr0:
+        assert pr1[m][0] == pytest.approx(pr0[m][0], rel=1e-12), m
 
 
 def test_holidays_and_weather_on_the_baseline_days():
@@ -232,6 +301,39 @@ def test_full_path_writes_the_chart_and_findings(full_out):
         assert LINE.match(line), line
     rep = (tmp / "reports" / "q10_features.txt").read_text().splitlines()
     assert len(rep) <= 152
+
+
+def test_findings_follow_the_week_ahead_comparison(full_out):
+    """Every sentence about the weekday's value matches the corrected (week-ahead) numbers."""
+    res, tmp = full_out
+    lines = (tmp / "answers" / "q10.md").read_text().splitlines()
+    ev = res["evaluation"]
+    summ, v, lab = ev["summary"].set_index("model"), ev["values"].set_index("group"), ev["typical_label"]
+    assert ev["later_years"]
+    for y in ev["later_years"]:
+        bullet = next(l for l in lines if l.startswith(f"- **{y}"))
+        beat = summ.loc["mean28", str(y)] < summ.loc["base", str(y)]
+        assert ("beat the same-weekday mean" in bullet) == beat, y
+        assert "faded" not in bullet
+    rank = next(l for l in lines if "**Day of week**" in l)
+    assert f"{q10._num(v.loc['dow', f'value_{lab}'], '+.2f')} points" in rank and "7 to 34 days earlier" in rank
+    drift = next(l for l in lines if l.startswith(("- **The patterns drift", "- **Weekly and holiday")))
+    later = [v.loc["dow", f"value_{y}"] for y in ev["later_years"]]
+    if "worth less" in drift:
+        assert max(later) < v.loc["dow", f"value_{lab}"]
+    assert "7-34 days earlier" in q10.MODELS["mean28"]
+
+
+def test_findings_put_the_response_tests_in_multiple_testing_context(full_out):
+    res, tmp = full_out
+    md = (tmp / "answers" / "q10.md").read_text()
+    est = res["response"]["tests"].query("estimable")
+    n, k = len(est), int(est.significant.sum())
+    line = next(l for l in md.splitlines() if l.startswith("- **Multiple tests.**"))
+    assert f"{n} one-feature response-time tests" in line and f"about {n * q10.ALPHA:.1f} would pass" in line
+    assert f"{k} passed" in line
+    if k:
+        assert f"{int((est.p < q10.ALPHA / n).sum())} of them also below the Bonferroni threshold" in line
 
 
 def test_findings_list_features_by_the_same_test_they_show(full_out):
