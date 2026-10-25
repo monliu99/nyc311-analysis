@@ -1,6 +1,6 @@
 # NYC 311 lab (MGT 634, Lab Day 2)
 
-The brief is `brief/Lab_Day_2_Challenge.pdf`: 11 questions on NYC 311 service requests,
+The brief (course material, kept out of this repo) asks 11 questions on NYC 311 service requests,
 answered from 2,824 JSON batch files (33.3 GB, 28.24M rows, Jan 1 2010 - Nov 20 2021) that only exist on the
 cluster. Everything runs with one command and reproduces every number.
 
@@ -49,7 +49,7 @@ pandas 2.3.3, numpy 2.0.2, pyarrow 21.0.0) and on the current one (Python 3.14, 
    print(open("nyc311_lab/VERSION.txt").read())
    ```
 4. **Open `nyc311_lab/lab.ipynb`.** In Settings (cell 3) set
-   `DATA = "/gpfs/project/esai_2026/data/311/311_batch_*.json"` and `WORK = "/gpfs/home/ml3338/esai_311_work"`,
+   `DATA = "/gpfs/project/esai_2026/data/311/311_batch_*.json"` and `WORK = "/gpfs/home/<netid>/esai_311_work"`,
    and leave `THREADS` and `MEMORY_LIMIT` at `None` (4 threads, DuckDB memory limit 22GB). Reuse that WORK: it
    already holds the 28.24M-row Parquet copy, so ingest only checks for new files.
 5. **Run > Run All Cells.** Check the `00_env` block: Python 3.9.24, 4 CPUs, 2,824 files (33.3 GB), no WARNING
@@ -59,7 +59,7 @@ pandas 2.3.3, numpy 2.0.2, pyarrow 21.0.0) and on the current one (Python 3.14, 
    `nyc311_lab/outputs/report.html`. Unzip the bundle into `cluster_outputs/runN/` here.
 
 Without Jupyter (inside the same SLURM job, not on a login node), steps 4-5 are, from `nyc311_lab/`:
-`python3 run_all.py --data "/gpfs/project/esai_2026/data/311/311_batch_*.json" --work /gpfs/home/ml3338/esai_311_work`.
+`python3 run_all.py --data "/gpfs/project/esai_2026/data/311/311_batch_*.json" --work /gpfs/home/<netid>/esai_311_work`.
 
 **Time and memory.** Ingest took 171 s for the 2,824 files on the cluster (4 CPUs). Discovery on a 27.6M-row
 synthetic copy took 75 s on a laptop with 4 threads and a peak of 1.7 GB, so plan for 3-5 minutes on the cluster.
@@ -83,7 +83,7 @@ when WORK has less than half the JSON size free. Keep WORK on GPFS home, which h
 renamed), so the manifest never lists a file whose rows aren't in Parquet. On a rerun it deletes any part that the
 manifest doesn't list, then converts only the files it doesn't have yet. A file that couldn't be read (for example,
 permission denied) is retried on the next run. Discovery keeps no state, so it simply runs again. A WORK folder
-written by the first version of ingest (such as `/gpfs/home/ml3338/esai_311_work`) is upgraded in place on the next
+written by the first version of ingest (such as `/gpfs/home/<netid>/esai_311_work`) is upgraded in place on the next
 ingest, in seconds and without rescanning; discovery reads it either way. Only if a data file changes size does
 ingest stop with "delete WORK and rerun".
 
@@ -101,7 +101,7 @@ uv run --no-project --with-requirements requirements.txt pytest              # t
 ## Folder layout
 
 ```
-brief/            the assignment and the NY State Comptroller's NYC311 report (benchmark numbers)
+brief/            the assignment and the NY State Comptroller's NYC311 report (local only, not in the repo)
 data/sample/      20 batch files (Jan 1 - Feb 3, 2010); local dev and tests only, not in git
 data/external/    weather, community district boundaries, district population/income (being fetched)
 nyc311/           the package: config, report, env, ingest, discover, rules, bundle (+ nytplot for charts)
